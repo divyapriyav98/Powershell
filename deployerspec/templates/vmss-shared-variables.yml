@@ -1,0 +1,61 @@
+# This template maps the output variables from the OSBpreprocessing stage 
+# to make them easily consumable in subsequent stages.
+variables:
+  # Core Identifiers
+  subscriptionId: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.subscriptionId'] ]
+  mcAction: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'] ]
+  appName: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.appName'] ]
+  location: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.location'] ]
+  
+  # Environment Details
+  environment: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.environment'] ]
+  tiername: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.tiername'] ]
+  shortTierName: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.shortTierName'] ]
+  shortEnvironmentName: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.shortEnvironmentName'] ]
+  hostingEnvironment: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.hostingEnvironment'] ]
+  applicationEnvironment: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.applicationEnvironment'] ]
+
+  # VMSS and Resource Details
+  vmss: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.vmss'] ]
+  resourceGroup: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.resourceGroup'] ]
+  bootstrapScript: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.bootstrapScript'] ]
+  serviceArtifacts: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.serviceArtifacts'] ]
+  serviceSetupScript: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.serviceSetupScript'] ]
+  vmImageSubnetId: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.vmImageSubnetId'] ]
+  vNetResourceGroupName: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.vNetResourceGroupName'] ]
+  vmssAlerts: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.vmssAlerts'] ]
+  vmssScheduledQueries: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.vmssScheduledQueries'] ]
+
+
+  # Image Gallery, Base Image and Versioning
+  galleryName: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.galleryName'] ]
+  galleryResourceGroup: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.galleryResourceGroup'] ]
+  gallerySubscriptionId: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.gallerySubscriptionId'] ]
+  galleryImageDefinitionName: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.galleryImageDefinitionName'] ]
+  storageAccount: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.storageAccount'] ]
+  storageContainerName: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.storageContainerName'] ]
+  baseImagePublisher: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.baseImagePublisher'] ]
+  baseImageOffer: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.baseImageOffer'] ]
+  baseImageSku: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.baseImageSku'] ]
+  baseImageVersion: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.baseImageVersion'] ]
+  baseSourceImageType: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.baseSourceImageType'] ]
+
+  imageTemplateName: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.imageTemplateName'] ]
+  imageVersion: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.imageVersion'] ]
+  imageDefinition: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.imageDefinition'] ]
+  
+  # Identity
+  userAssignedIdentityName: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.userAssignedIdentityName'] ]
+
+  #newcapacity
+  newCapacity: $[ stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.newCapacity'] ]
+
+  ## Pipeline Condition:
+  # deployerCondition: >
+  #   and(succeeded(), or(
+  #     eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'promote_canary'),
+  #     eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'shift_canary'),
+  #     eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'promote_live')
+  #   ))
+  # rollbackCondition: and(succeeded(), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'rollback'))
+  # testCondition: and(succeeded(), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'test'))
