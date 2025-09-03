@@ -1,0 +1,196 @@
+trigger: none
+pr: none
+
+name: VMSS_Deployer_$(System.DefinitionId)_$(Build.BuildId)
+
+parameters:
+- name: subscriptionId
+  type: string
+  default: 'bd341354-d4c1-4de2-996f-6228b587337c'
+  displayName: 'Subscription ID'
+
+
+variables:
+# - group: AKSPostProvisioning
+- name: azure_svc_connection
+  value: 'abt-devops-agents-work-sp'
+- name: osbOutputSecretName
+  value: 'az-$(System.DefinitionId)-$(Build.BuildId)'
+- name: imageTemplateName
+  value: 'rhel8-novmtools-$(Build.BuildId)'
+- name: imageVersion
+  value: '1.0.$(Build.BuildId)'
+- name: userAssignedIdentityName
+  value: 'id-vmss-builder-$(Build.BuildId)'
+- name: GALLERY_NAME
+  value: 'workeastussharedgallery'
+- name: GALLERY_RG  
+  value: 'rg-work-eastus-sharedgallery'
+- name: IMAGE_DEFINITION_NAME
+  value: 'mc_rhel8_java8'  
+- name: gallery_subscription_id 
+  value: '58ac996b-18bf-4b6b-913b-6d963ee15fb3'
+- name: scaleUpCount
+  value: 1   
+
+
+
+#  # pool:
+#   ${{ if eq(parameters.serviceSpecification.parameters.tierName, 'dev') }}:
+#     pool: 'abt-provisoner-service-work-agents'
+#   ${{ if eq(parameters.serviceSpecification.parameters.tierName, 'work') }}:
+#     pool: 'abt-provisoner-service-work-agents'
+#   ${{ if eq(parameters.serviceSpecification.parameters.tierName, 'nonp') }}:
+#     pool: 'abt-provisoner-service-nonp-agents'
+#   ${{ if eq(parameters.serviceSpecification.parameters.tierName, 'prod') }}:
+#     pool: 'abt-provisoner-service-prod-agents'
+
+pool: 'abt-provisoner-service-work-agents'
+
+
+resources:
+  repositories:
+    - repository: azdo-yaml-templates #alias name
+      type: git #type of repository
+      name: azdo-yaml-templates #repository name
+      ref: feature/vmss-deploy-service #feature/infra-gen-kp #'refs/heads/main' #git branch reference
+
+stages:
+
+  - stage: VMSSMaintenance
+    displayName: 'VMSS Maintenance'
+    # dependsOn: 
+    #   - OSBpreprocessing
+    # variables:
+    #   - template: templates/vmss-shared-variables.yml  
+    jobs:
+      - job: QueryVMSS
+        displayName: 'Query VMSS Upgrade List'
+        steps:
+          - task: AzureCLI@2
+            displayName: "List VMSS with tag 'VMSSupgrade=true'"
+            inputs:
+              azureSubscription: $(azure_svc_connection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                  echo "Checking for VMSS with tag 'VMSSUpgrade=true'..."
+                  subscriptionId="${{ parameters.subscriptionId }}"
+                  echo "subscription- $subscriptionId"
+                  az account set --subscription "$subscriptionId"
+                  az account show --query "{Name:name, ID:id}" -o table
+                  echo "list vmss in sub"
+                  az vmss list --subscription "$subscriptionId" -o table
+                  echo "list vmss in vmsstrue"
+                  az vmss list  --query "[?tags.VMSSUpgrade=='true'].[name, resourceGroup]" -o table
+                  # az vmss list --output json | jq '.[] | select(.tags.VMSSUpgrade | ascii_downcase == "True") | {Name: .name, ResourceGroup: .resourceGroup, Location: .location}'
+                  vmss_list=$(az vmss list --subscription "$subscriptionId" --query "[?tags.VMSSUpgrade=='true'].[name, resourceGroup]" -o tsv)
+                  if [ -z "$vmss_list" ]; then
+                      echo " No VMSS found with tag 'VMSSUpgrade=True'."
+                  else
+                     echo "Found VMSS to upgrade:"
+                     echo "$vmss_list"
+                  fi
+                  echo "##vso[task.setvariable variable=vmss_list]$vmss_list"
+              failOnStandardError: true
+
+          - task: AzureCLI@2
+            displayName: 'Upgrade VMSS with Image from Gallery and Update Tag'
+            inputs:
+              azureSubscription: $(azure_svc_connection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -euo pipefail
+ 
+                az account set --subscription "${{ parameters.subscriptionId }}"
+ 
+                vmss_list="$(az vmss list --subscription "${{ parameters.subscriptionId }}" --query "[?tags.VMSSUpgrade=='true'].[name, resourceGroup]" -o tsv)"
+ 
+                if [ -z "$vmss_list" ]; then
+                  echo "No VMSS found with tag 'VMSSUpgrade=True'. Exiting."
+                  exit 0
+                fi
+ 
+                echo "Found VMSS to upgrade:"
+                echo "$vmss_list"
+ 
+                echo "$vmss_list" | while IFS=$'\t' read -r vmss_name resource_group; do
+                if [ -z "$vmss_name" ] || [ -z "$resource_group" ]; then
+                    echo "Skipping invalid entry"
+                    continue
+                fi
+ 
+                echo "-----------------------------------------------------"
+                echo "Processing VMSS: $vmss_name in RG: $resource_group"
+ 
+                # Get current image reference
+                image_reference=$(az vmss show --resource-group "$resource_group" --name "$vmss_name" --query "virtualMachineProfile.storageProfile.imageReference" -o json)
+                if [ -z "$image_reference" ]; then
+                  echo "No image reference found for VMSS $vmss_name. Skipping."
+                  continue
+                fi
+ 
+                image_rg=$(echo "$image_reference" | jq -r '.id | split("/") | .[4]')
+                image_name=$(echo "$image_reference" | jq -r '.id | split("/") | .[10]')
+                gallery_name=$(echo "$image_reference" | jq -r '.id | split("/") | .[8]')
+                image_id=$(echo "$image_reference" | jq -r '.id')
+                image_subscription_id=$(echo "$image_reference" | jq -r '.id | split("/") | .[2]')
+ 
+                echo "Image RG: $image_rg"
+                echo "Image Name: $image_name"
+                echo "Gallery: $gallery_name"
+                echo "Image ID: $image_id"
+                echo "Image Sub: $image_subscription_id"
+ 
+                 # Set image subscription context
+                az account set --subscription "$image_subscription_id"
+ 
+                # Find latest image version
+                latest_image_version_id=$(az sig image-version list --gallery-name "$gallery_name" --gallery-image-definition "$image_name" --resource-group "$image_rg" --query "sort_by(@, &publishingProfile.publishedDate)[-1].id" -o tsv)
+                location=$(az sig show --resource-group "$image_rg" --gallery-name "$gallery_name" --query "location" -o tsv)
+ 
+                if [ -z "$latest_image_version_id" ]; then
+                  echo "No published image versions found. Skipping VMSS $vmss_name."
+                  continue
+                fi
+ 
+                echo "Latest image version: $latest_image_version_id"
+  
+                # Switch back to VMSS subscription
+                az account set --subscription "${{ parameters.subscriptionId }}"
+                #################################################
+                is_marketplace_image=$(echo "$image_reference" | jq -r '.id | test("/subscriptions/.*/resourceGroups/.*/providers/Microsoft.Compute/images/.*/versions/.+")')
+                if [ "$is_marketplace_image" = "true" ]; then
+                    echo "The image is a Marketplace image. Proceeding with regular upgrade..."
+                    # Marketplace image - Proceed with the image upgrade
+                    az vmss update --name "$vmss_name" --resource-group "$resource_group" --set virtualMachineProfile.storageProfile.imageReference.id="$latest_image_version_id"
+                else
+                    echo "The image is a custom image. Removing the Plan information before upgrading..."
+                    # Custom image - Remove the Plan information before upgrading
+                    az vmss update --name "$vmss_name" --resource-group "$resource_group" --set virtualMachineProfile.storageProfile.imageReference.id="$latest_image_version_id" plan=null
+                    az vmss update --name "$vmss_name" --resource-group "$resource_group" --set virtualMachineProfile.storageProfile.imageReference.id="$latest_image_version_id" --set virtualMachineProfile.storageProfile.imageReference.plan=null
+                fi
+ 
+                ###############################################3
+
+ 
+                # Scale VMSS to trigger instance update
+                currentCapacity=$(az vmss list-instances --resource-group "$resource_group" --name "$vmss_name" --query "length(@)" -o tsv)
+                newCapacity=$((currentCapacity + $(scaleUpCount)))
+                echo "Scaling VMSS from $currentCapacity to $newCapacity"
+                az vmss scale --resource-group "$resource_group" --name "$vmss_name" --new-capacity $newCapacity
+ 
+                # Reset tag
+                echo "Updating tag VMSSUpgrade=False"
+                # az vmss update --name "$vmss_name" --resource-group "$resource_group" --set tags.VMSSUpgrade=false
+ 
+                echo "Finished processing $vmss_name"
+                done
+            env:
+             gallery_subscription_id: $(gallery_subscription_id)
+             scaleUpCount: $(scaleUpCount)      
+
+
+
+
