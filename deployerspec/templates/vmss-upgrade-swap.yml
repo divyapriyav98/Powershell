@@ -1,0 +1,700 @@
+parameters:
+  - name: dependsOn
+    type: string
+    default: ''
+  - name: condition
+    type: string
+    default: 'succeeded()'
+  - name: SCRIPT_PATH
+    type: string
+    default: '$(Build.SourcesDirectory)/azure-pipelines/scripts/vmss-switch-lbswap.ps1'
+
+
+jobs:
+  - job: BlueGreenDeploy
+    ${{ if ne(parameters.dependsOn, '') }}:
+      dependsOn: ${{ parameters.dependsOn }}
+    displayName: 'Run PowerShell to Switch VMSS Backends'
+    condition: ${{ parameters.condition }}
+    steps:
+      - checkout: self
+      # - task: AzureCLI@2
+      #   displayName: 'Step 0: Discover LB Name Dynamically'
+      #   inputs:
+      #     azureSubscription: $(azure_svc_connection)
+      #     scriptType: Bash
+      #     scriptLocation: inlineScript
+      #     InlineScript: |
+      #       az account set --subscription $(subscriptionId)
+      #       echo "RG Name: $(resourceGroup)"
+      #       lbName=$(az network lb list --resource-group $(resourceGroup) --query "[0].name" -o tsv)
+      #       if [ -z "$lbName" ]; then
+      #         echo "ERROR: No Load Balancer found in the resource group."
+      #         exit 1
+      #       fi
+      #       pools=$(az network lb show --resource-group $(resourceGroup) --name "$lbName" --query "backendAddressPools[].name" -o tsv)
+      #       echo "Found backend pools:"
+      #       echo "$pools"
+      #       # Convert to array and export first two as variables
+      #       arr=($pools)
+      #       echo "##vso[task.setvariable variable=backendPool01]${arr[0]}"
+      #       echo "##vso[task.setvariable variable=backendPool02]${arr[1]}"
+      #       echo "Discovered LB Name: $lbName"
+      #       echo "##vso[task.setvariable variable=LB_NAME]$lbName"
+
+
+      # - task: AzurePowerShell@5
+      #   displayName: 'Step A: Discover Load Balancer Rules & Backend Pools'
+      #   inputs:
+      #     azureSubscription: $(azure_svc_connection)
+      #     ScriptPath: '${{ parameters.SCRIPT_PATH }}'
+      #     ScriptType: 'FilePath'
+      #     ScriptArguments: '-step A -subscriptionId $(subscriptionId) -resourceGroupName $(resourceGroup) -lbName "$(LB_NAME)"'
+      #     azurePowerShellVersion: 'LatestVersion'
+      #     pwsh: true
+      #     FailOnStandardError: true
+
+      # - task: AzurePowerShell@5
+      #   displayName: 'Step B: Discover Backend Pools'
+      #   inputs:
+      #     azureSubscription: $(azure_svc_connection)
+      #     ScriptPath: '${{ parameters.SCRIPT_PATH }}'
+      #     ScriptType: 'FilePath'
+      #     ScriptArguments: '-step B -subscriptionId $(subscriptionId) -resourceGroupName $(resourceGroup) -lbName "$(LB_NAME)"'
+      #     azurePowerShellVersion: 'LatestVersion'
+      #     pwsh: true
+      #     FailOnStandardError: true
+
+      # - task: AzurePowerShell@5
+      #   displayName: 'Step C: Determine Current Mapping'
+      #   inputs:
+      #     azureSubscription: $(azure_svc_connection)
+      #     ScriptPath: '${{ parameters.SCRIPT_PATH }}'
+      #     ScriptType: 'FilePath'
+      #     ScriptArguments: '-step C -subscriptionId $(subscriptionId) -resourceGroupName $(resourceGroup) -lbName "$(LB_NAME)"'
+      #     azurePowerShellVersion: 'LatestVersion'
+      #     pwsh: true
+      #     FailOnStandardError: true
+
+      # - task: AzurePowerShell@5
+      #   displayName: 'Step D: Point Rules to Active Pool'
+      #   inputs:
+      #     azureSubscription: $(azure_svc_connection)
+      #     ScriptPath: '${{ parameters.SCRIPT_PATH }}'
+      #     ScriptType: 'FilePath'
+      #     ScriptArguments: '-step D -subscriptionId $(subscriptionId) -resourceGroupName $(resourceGroup) -lbName "$(LB_NAME)"'
+      #     azurePowerShellVersion: 'LatestVersion'
+      #     pwsh: true
+      #     FailOnStandardError: true
+
+      # - task: AzureCLI@2
+      #   displayName: 'STEP D0 - Update VMSS NICs to active backend pool'
+      #   inputs:
+      #    azureSubscription: $(azure_svc_connection)
+      #    scriptType: Bash
+      #    scriptLocation: inlineScript
+      #    inlineScript: |
+      #     set -e 
+      #     echo "Setting subscription..."
+      #     az account set --subscription $(subscriptionId)  
+      #     echo "Getting backend pool ID for '$activePoolName'"
+      #     activePoolId=$(az network lb address-pool show --resource-group $(resourceGroup) --lb-name "$(LB_NAME)" --name "$activePoolName" --query id -o tsv) 
+      #     echo "Active backend pool ID: $activePoolId" 
+      #     echo "Fetching VMSS list in $(RESOURCE_GROUP_NAME)..."
+      #     vmssNames=$(az vmss list --subscription $(subscriptionId) --resource-group $(resourceGroup) --query "[].name" -o tsv) 
+      #     for vmssName in $vmssNames; do
+      #      echo "Updating VMSS '$vmssName' NIC to use pool '$activePoolName'"
+      #      az vmss update --subscription $(subscriptionId) --resource-group $(resourceGroup) --name "$vmssName" --set "virtualMachineProfile.networkProfile.networkInterfaceConfigurations[0].ipConfigurations[0].loadBalancerBackendAddressPools=[{\"id\":\"$activePoolId\"}]"
+      #     done
+      #   env: 
+      #     activePoolName: $(activePoolName)      
+
+      # - task: AzurePowerShell@5
+      #   displayName: 'Step E: Wait for Traffic Drain'
+      #   inputs:
+      #     azureSubscription: $(azure_svc_connection)
+      #     ScriptPath: '${{ parameters.SCRIPT_PATH }}'
+      #     ScriptType: 'FilePath'
+      #     ScriptArguments: '-step E -subscriptionId $(subscriptionId) -resourceGroupName $(resourceGroup) -lbName "$(LB_NAME)"'
+      #     azurePowerShellVersion: 'LatestVersion'
+      #     pwsh: true
+      #     FailOnStandardError: true
+
+      # - task: AzurePowerShell@5
+      #   displayName: 'Step F: Swap Rules to Opposite Pool'
+      #   inputs:
+      #     azureSubscription: $(azure_svc_connection)
+      #     ScriptPath: '${{ parameters.SCRIPT_PATH }}'
+      #     ScriptType: 'FilePath'
+      #     ScriptArguments: '-step F -subscriptionId $(subscriptionId) -resourceGroupName $(resourceGroup) -lbName "$(LB_NAME)"'
+      #     azurePowerShellVersion: 'LatestVersion'
+      #     pwsh: true
+      #     FailOnStandardError: true
+
+      # - task: AzureCLI@2
+      #   displayName: 'STEP F1 - Swap VMSS Backend Pools based on original mapping'
+      #   inputs:
+      #     azureSubscription: $(azure_svc_connection)
+      #     scriptType: Bash
+      #     scriptLocation: inlineScript
+      #     inlineScript: |
+      #       set -e
+ 
+      #       echo "Setting subscription..."
+      #       az account set --subscription $(subscriptionId)
+      #       resourceGroup=$(resourceGroup) 
+      #       # Backend pool IDs and names from Step F output variables
+      #       backendPool1Id="$(backendPool1Id)"
+      #       backendPool2Id="$(backendPool2Id)"
+      #       backendPool1Name="$(backendPool1name)"
+      #       backendPool2Name="$(backendPool2name)" 
+      #       echo "Backend Pool 1: $backendPool1Name -> $backendPool1Id"
+      #       echo "Backend Pool 2: $backendPool2Name -> $backendPool2Id" 
+      #       # Parse the map string to valid JSON
+      #       vmssMapJson='$(vmssToPoolMapJson)'
+      #       echo "Parsed VMSS to pool map: $vmssMapJson"
+      #       vmssNames=$(echo "$vmssMapJson" | jq -r 'keys[]')
+      #       for vmssName in $vmssNames; do
+      #         originalPoolName=$(echo "$vmssMapJson" | jq -r --arg vmss "$vmssName" '.[$vmss]')
+      #         echo "VMSS '$vmssName' originally assigned to backend pool: $originalPoolName"
+ 
+      #         if [ "$originalPoolName" == "$backendPool1Name" ]; then
+      #           newPoolId="$backendPool2Id"
+      #           newPoolName="$backendPool2Name"
+      #         else
+      #           newPoolId="$backendPool1Id"
+      #           newPoolName="$backendPool1Name"
+      #         fi
+ 
+      #         echo "Updating VMSS '$vmssName' backend pool to: $newPoolName ($newPoolId)"
+ 
+      #         az vmss update --subscription $(subscriptionId) --resource-group $(resourceGroup) --name "$vmssName" --set "virtualMachineProfile.networkProfile.networkInterfaceConfigurations[0].ipConfigurations[0].loadBalancerBackendAddressPools=[{\"id\":\"$newPoolId\"}]"
+      #       done
+ 
+      #       echo "STEP F1 completed successfully."
+      #       echo "==== Verifying all VMSS backend pool assignments ===="
+      #       for vmssName in $vmssNames; do
+      #         assignedPoolId=$(az vmss show --subscription $(subscriptionId) --resource-group $(resourceGroup) --name "$vmssName" --query "virtualMachineProfile.networkProfile.networkInterfaceConfigurations[0].ipConfigurations[0].loadBalancerBackendAddressPools[0].id" -o tsv)
+      #         echo "VMSS '$vmssName' → $assignedPoolId"
+      #       done
+      #   env:
+      #     backendPool1Id: $(backendPool1Id)
+      #     backendPool2Id: $(backendPool2Id)
+      #     backendPool1name: $(backendPool1name)
+      #     backendPool2name: $(backendPool2name)
+      #     vmssToPoolMapJson: $(vmssToPoolMapJson)    
+
+      # - task: AzurePowerShell@5
+      #   displayName: 'Step G: Verify Final Configuration'
+      #   inputs:
+      #     azureSubscription: $(azure_svc_connection)
+      #     ScriptPath: '${{ parameters.SCRIPT_PATH }}'
+      #     ScriptType: 'FilePath'
+      #     ScriptArguments: '-step G -subscriptionId $(subscriptionId) -resourceGroupName $(resourceGroup) -lbName "$(LB_NAME)"'
+      #     azurePowerShellVersion: 'LatestVersion'
+      #     pwsh: true
+      #     FailOnStandardError: true
+
+      # - task: AzureCLI@2
+      #   displayName: 'STEP H - Scale down inactive (Blue) VMSS'
+      #   inputs:
+      #     azureSubscription: $(azure_svc_connection)
+      #     scriptType: 'bash'
+      #     scriptLocation: 'inlineScript'
+      #     inlineScript: |
+      #       set -e
+      #       echo "Setting subscription..."
+      #       az account set --subscription $(subscriptionId) 
+      #       echo "=== Identifying VMSS linked to backendPool01 ==="
+      #       backendPool01="$(backendPool01)"
+      #       echo "Target backend pool: $backendPool01"
+      #       # Read VMSS → Pool map from file
+      #       vmssToPoolMap=$(cat "$BUILD_ARTIFACTSTAGINGDIRECTORY/vmssToPoolMap.json")
+      #       # Use jq to find the VMSS linked to backendPool01
+      #       vmssName=$(echo "$vmssToPoolMap" | jq -r "to_entries[] | select(.value == \"$backendPool01\") | .key")
+      #       if [ -z "$vmssName" ]; then
+      #         echo "ERROR: No VMSS found linked to backendPool01 ($backendPool01)"
+      #         exit 1
+      #       fi
+      #       echo "VMSS linked to backendPool01 is: $vmssName"
+      #       echo "##vso[task.setvariable variable=blueVmssName]$vmssName"
+      #       # === Scale down the VMSS to zero ===
+      #       echo "Scaling down VMSS '$vmssName' to 0 instances..."
+      #       az vmss update --resource-group $(resourceGroup) --name "$vmssName" --set sku.capacity=0
+      #       echo "VMSS '$vmssName' scaled down successfully."
+      #   env:
+      #      backendPool1name: $(backendPool01)
+      #      vmssToPoolMapJson: $(vmssToPoolMapJson) 
+
+# vmssAlerts & vmssScheduledQueries are supplied as pipeline variables.
+# Removed prior PowerShell step that attempted to build them from a parameter.
+
+     
+    
+      - task: AzureCLI@2
+        name: CreateAlertsTask
+        inputs:
+          azureSubscription: $(azure_svc_connection)
+          scriptType: pscore
+          scriptLocation: inlineScript
+          inlineScript: |
+            $AZ_SUBSCRIPTION_ID = "$(subscriptionId)"
+            $rg = "persistent-pjmxhv7rp-avms-dev14-work-eastus" #"$(resourceGroup)"
+            $VMSS0 = "blue-vmss"
+            $VMSS1 = "green-vmss"
+            $activeVmss = "blue-vmss"
+            $VMSS0_RESOURCE_ID = "/subscriptions/bd341354-d4c1-4de2-996f-6228b587337c/resourceGroups/persistent-pjmxhv7rp-avms-dev14-work-eastus/providers/Microsoft.Compute/virtualMachineScaleSets/vmss-pjmxhv7rp-dev14-work-eastus-0"
+            $VMSS1_RESOURCE_ID = "/subscriptions/bd341354-d4c1-4de2-996f-6228b587337c/resourceGroups/persistent-pjmxhv7rp-avms-dev14-work-eastus/providers/Microsoft.Compute/virtualMachineScaleSets/vmss-pjmxhv7rp-dev14-work-eastus-1"
+            $workspaceId = "/subscriptions/1e3fd2bd-6171-4f89-b039-8d2ecee852d3/resourceGroups/cloudcore-logstorage-work-eastus/providers/Microsoft.OperationalInsights/workspaces/eastus-work-log-workspace"
+
+            az config set extension.dynamic_install_allow_preview=true
+            az account set --subscription $AZ_SUBSCRIPTION_ID
+            
+            if ($activeVmss -eq $VMSS0) {  
+                $inactiveVmss = $VMSS1 
+                $inactiveVmss_id = $VMSS1_RESOURCE_ID
+                $activeVmss_id = $VMSS0_RESOURCE_ID
+            } else { 
+                $inactiveVmss = $VMSS0 
+                $inactiveVmss_id = $VMSS0_RESOURCE_ID
+                $activeVmss_id = $VMSS1_RESOURCE_ID
+            }
+            
+            # 1. Create Action Group & parse inputs (clean implementation)
+            $actionGroupName  = "vmss-alert-action-group"
+            $actionGroupShort = "BCAlerts"
+
+            # Expect env vars already populated as JSON (set via pipeline 'env:' block)
+            $emailsJson   = $env:vmssAlerts
+            $queriesJson  = $env:vmssScheduledQueries  # Could be array OR object with 'queries'
+
+            Write-Host "Raw vmssAlerts JSON: $emailsJson"
+            Write-Host "Raw vmssScheduledQueries JSON: $queriesJson"
+
+            # -------- Parse Emails (accept array OR object containing 'emails' OR 'alerts.emails') --------
+            $emails = @()
+            if (-not [string]::IsNullOrWhiteSpace($emailsJson)) {
+              try {
+                $parsedEmails = $emailsJson | ConvertFrom-Json -ErrorAction Stop
+
+                # Case 1: Already an array of email objects
+                if ($parsedEmails -is [System.Collections.IEnumerable] -and
+                    $parsedEmails.GetType().FullName -ne 'System.String') {
+                  $emails = $parsedEmails
+                  Write-Host "vmssAlerts parsed as array. Count=$($emails.Count)"
+                }
+                # Case 2: Object with 'emails' property
+                elseif ($parsedEmails.PSObject.Properties.Name -contains 'emails') {
+                  $emails = $parsedEmails.emails
+                  Write-Host "vmssAlerts wrapped object detected. Extracted emails Count=$($emails.Count)"
+                }
+                # Case 3: Object with nested 'alerts.emails'
+                elseif ($parsedEmails.PSObject.Properties.Name -contains 'alerts' -and $parsedEmails.alerts.emails) {
+                  $emails = $parsedEmails.alerts.emails
+                  Write-Host "vmssAlerts nested alerts.emails detected. Count=$($emails.Count)"
+                }
+                else {
+                  Write-Warning "vmssAlerts JSON did not match expected shapes (array | {emails:[]} | {alerts:{emails:[]}})."
+                }
+              } catch {
+                Write-Warning "Failed to parse vmssAlerts JSON: $($_.Exception.Message). Proceeding with empty email list."
+              }
+            } else {
+              Write-Host "No vmssAlerts JSON provided."
+            }
+            # Normalize: ensure each entry has name & address
+            $emails = $emails | Where-Object { $_ -and $_.name -and $_.address }
+            Write-Host "Final actionable email entries: $($emails.Count)"
+
+            foreach ($e in $emails) {
+              Write-Host "Parsed email action => Name=$($e.name) Address=$($e.address)"
+            }
+
+            # -------- Create / Ensure Action Group --------
+            $existingActionGroup = az monitor action-group show --name $actionGroupName --resource-group $rg 2>$null
+            if ($existingActionGroup) {
+              Write-Host "Action Group $actionGroupName already exists."
+            } else {
+              if ($emails.Count -eq 0) {
+                Write-Host "No emails supplied; Action Group will be created WITHOUT email actions."
+                az monitor action-group create `
+                  --name $actionGroupName `
+                  --resource-group $rg `
+                  --short-name $actionGroupShort | Out-Null
+              } else {
+                # Build dynamic command including all email actions
+                $createCmd = "az monitor action-group create --name `"$actionGroupName`" --resource-group `"$rg`" --short-name `"$actionGroupShort`""
+                foreach ($e in $emails) {
+                  if (-not [string]::IsNullOrWhiteSpace($e.name) -and -not [string]::IsNullOrWhiteSpace($e.address)) {
+                    $createCmd += " --action email $($e.name) $($e.address)"
+                  } else {
+                    Write-Warning "Skipping malformed email entry (missing name/address): $($e | ConvertTo-Json -Compress)"
+                  }
+                }
+                Write-Host "Creating Action Group with command: $createCmd"
+                Invoke-Expression $createCmd | Out-Null
+              }
+            }
+
+            # Obtain Action Group ID
+            $actionGroupId = az monitor action-group show `
+              --name $actionGroupName `
+              --resource-group $rg `
+              --query id -o tsv 2>$null
+
+            if (-not $actionGroupId) {
+              Write-Error "Failed to obtain Action Group ID for $actionGroupName"
+              az monitor action-group list --resource-group $rg
+              exit 1
+            }
+            Write-Host "Action Group ID: $actionGroupId"
+
+            # -------- Parse Scheduled Queries --------
+            $queries = @()
+            if (-not [string]::IsNullOrWhiteSpace($queriesJson)) {
+              try {
+                $parsedQueries = $queriesJson | ConvertFrom-Json -ErrorAction Stop
+                if ($parsedQueries -is [System.Collections.IEnumerable] -and $parsedQueries -notmatch 'System\.String') {
+                  # Already an array
+                  $queries = $parsedQueries
+                } elseif ($parsedQueries.queries) {
+                  $queries = $parsedQueries.queries
+                } else {
+                  Write-Warning "Scheduled queries JSON does not contain 'queries' array or is not an array itself."
+                }
+              } catch {
+                Write-Warning "Failed to parse vmssScheduledQueries JSON: $($_.Exception.Message). No alerts will be created."
+              }
+            } else {
+              Write-Host "No vmssScheduledQueries JSON provided."
+            }
+
+            Write-Host "Total parsed scheduled queries: $($queries.Count)"
+            foreach ($q in $queries) {
+              Write-Host "Query parsed => name=$($q.name) severity=$($q.severity) freq=$($q.frequency) window=$($q.time_window)"
+            }
+
+
+
+            #######################333 added ends ########################3
+            
+
+
+            # First, try to clean up any potentially conflicting alerts from other resource groups
+            Write-Host "Checking for and cleaning up any conflicting alerts..."
+            
+            # Track successful and failed alert operations
+            $successfulAlerts = @()
+            $failedAlerts = @()
+            
+            foreach ($q in $queries) {
+              # Use resource group prefix to make names more unique
+              $rgPrefix = $rg.Split('-')[1..2] -join '-'  # Extract middle part of RG name
+              $alertNameActive   = "$($q.name)_$rgPrefix`_$activeVmss"
+              $alertNameInactive = "$($q.name)_$rgPrefix`_$inactiveVmss"
+
+              # Replace placeholder
+              Write-Host "Debug: Original query for $($q.name): $($q.query)"
+              $queryText = $q.query -replace "\{VMSS_NAME\}", $activeVmss
+              $queryText = $queryText -replace "\{VMSS_RESOURCE_ID\}", $activeVmss_id
+              Write-Host "Debug: After placeholder replacement: $queryText"
+
+              # Clean up query text for KQL - convert multi-line to single line properly
+              $queryText = $queryText -replace "`r`n", "`n"  # Normalize line endings
+              
+              # Split into lines, trim each line, filter out empty lines
+              $queryLines = ($queryText -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+              Write-Host "Debug: Query split into $($queryLines.Count) lines"
+              
+              # Join lines with proper spacing - ensure pipes and operators are properly spaced
+              $queryText = ""
+              for ($i = 0; $i -lt $queryLines.Count; $i++) {
+                $line = $queryLines[$i]
+                Write-Host "Debug: Processing line $($i + 1): '$line'"
+                if ($i -eq 0) {
+                  $queryText = $line
+                } else {
+                  # Always add a space before adding the next line
+                  # KQL can handle multiple spaces, but needs at least one between clauses
+                  $queryText += " " + $line
+                }
+              }
+              
+              # Clean up the final query text
+              $queryText = $queryText -replace "\s+", " "  # Normalize multiple spaces to single space
+              # Ensure proper spacing around common KQL operators
+              $queryText = $queryText -replace "\|\s*", "| "  # Ensure space after pipes
+              $queryText = $queryText -replace "\s*==\s*", " == "  # Ensure space around equality
+              $queryText = $queryText -replace "\s*!=\s*", " != "  # Ensure space around not-equals
+              $queryText = $queryText -replace "\s*>=\s*", " >= "  # Ensure space around greater-equal
+              $queryText = $queryText -replace "\s*<=\s*", " <= "  # Ensure space around less-equal
+              $queryText = $queryText -replace "\s*>\s*", " > "    # Ensure space around greater
+              $queryText = $queryText -replace "\s*<\s*", " < "    # Ensure space around less
+              $queryText = $queryText.Trim()
+
+              Write-Host "Debug: Final processed query for $($q.name): $queryText"
+
+              # Basic validation of the processed query
+              if ([string]::IsNullOrWhiteSpace($queryText)) {
+                Write-Error "Query for $($q.name) is empty after processing. Skipping alert creation."
+                $failedAlerts += [PSCustomObject]@{
+                  Name = $q.name
+                  AlertName = $alertNameActive
+                  Reason = "Query is empty after processing"
+                }
+                continue
+              }
+
+              # Check if query contains basic KQL elements
+              if (-not ($queryText -match "\w+") -or $queryText.Length -lt 10) {
+                Write-Error "Query for $($q.name) appears to be malformed (too short or no valid content). Query: '$queryText'"
+                $failedAlerts += [PSCustomObject]@{
+                  Name = $q.name
+                  AlertName = $alertNameActive
+                  Reason = "Query appears malformed or too short"
+                }
+                continue
+              }
+
+              # Convert frequency and time_window to proper format (##m format for minutes)
+              $frequencyFormat = "$($q.frequency)m"  # Convert to ##m format
+              $timeWindowFormat = "$($q.time_window)m"  # Convert to ##m format
+
+              # Validate we have a valid action group ID before proceeding
+              if (-not $actionGroupId) {
+                Write-Error "Action Group ID is empty. Cannot create scheduled query alert."
+                continue
+              }
+
+              Write-Host "Creating scheduled query alert: $alertNameActive"
+              Write-Host "Using Action Group ID: $actionGroupId"
+
+              # ===== TEMPORARY: Delete existing alerts if found =====
+              # TODO: Remove this block once alert conflicts are resolved
+              $existingAlertToDelete = az monitor scheduled-query show --name $alertNameActive --resource-group $rg 2>$null
+              if ($existingAlertToDelete) {
+                Write-Host "TEMPORARY: Found existing alert $alertNameActive, deleting it..."
+                $deleteResult = az monitor scheduled-query delete `
+                  --name $alertNameActive `
+                  --resource-group $rg `
+                  --yes 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                  Write-Host "TEMPORARY: Successfully deleted existing alert $alertNameActive"
+                } else {
+                  Write-Warning "TEMPORARY: Failed to delete existing alert $alertNameActive`: $deleteResult"
+                }
+                Start-Sleep -Seconds 5  # Wait a bit for deletion to propagate
+              }
+              
+              # Also check for and delete any potential cross-RG conflicts by trying different naming patterns
+              $potentialConflictNames = @(
+                "$($q.name)_$activeVmss",  # Original naming pattern
+                "$($q.name)_tcoh4lzip_$activeVmss"  # Other resource group pattern
+              )
+              foreach ($conflictName in $potentialConflictNames) {
+                if ($conflictName -ne $alertNameActive) {  # Don't re-delete what we just deleted
+                  Write-Host "TEMPORARY: Checking for potential conflict alert: $conflictName"
+                  # Note: We can't delete from other resource groups, but we can check if they exist
+                  $conflictCheck = az monitor scheduled-query list --query "[?name=='$conflictName']" -o json 2>$null
+                  if ($conflictCheck -and $conflictCheck -ne "[]") {
+                    Write-Host "TEMPORARY: Found potential conflicting alert '$conflictName' in another resource group"
+                    Write-Host "TEMPORARY: Manual cleanup may be required for cross-resource group conflicts"
+                  }
+                }
+              }
+              # ===== END TEMPORARY DELETION BLOCK =====
+
+              # Check if alert already exists and update it, otherwise create it
+              $existingAlert = az monitor scheduled-query show --name $alertNameActive --resource-group $rg 2>$null
+              if ($existingAlert) {
+                Write-Host "Alert $alertNameActive already exists, updating it..."
+                
+                # Debug: Show the complete update command that will be executed
+                $debugUpdateCmd = "az monitor scheduled-query update " +
+                  "--name '$alertNameActive' " +
+                  "--resource-group '$rg' " +
+                  "--condition 'count ''AlertQuery'' > 0' " +
+                  "--condition-query AlertQuery='$queryText' " +
+                  "--action-groups '$actionGroupId' " +
+                  "--severity '$($q.severity)' " +
+                  "--evaluation-frequency '$frequencyFormat' " +
+                  "--window-size '$timeWindowFormat'"
+                Write-Host "Debug: Executing update command:"
+                Write-Host $debugUpdateCmd
+                
+                $updateResult = az monitor scheduled-query update `
+                  --name $alertNameActive `
+                  --resource-group $rg `
+                  --condition "count 'AlertQuery' > 0" `
+                  --condition-query AlertQuery="$queryText" `
+                  --action-groups $actionGroupId `
+                  --severity $($q.severity) `
+                  --evaluation-frequency $frequencyFormat `
+                  --window-size $timeWindowFormat 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                  Write-Warning "Failed to update alert $alertNameActive`: $updateResult"
+                  Write-Host "Update exit code: $LASTEXITCODE"
+                  # Track failed alert update
+                  $failedAlerts += @{
+                    QueryName = $q.name
+                    AlertName = $alertNameActive
+                    Operation = "Update"
+                    Reason = $updateResult
+                    ExitCode = $LASTEXITCODE
+                  }
+                  Write-Host "Continuing with next alert despite this failure..."
+                } else {
+                  Write-Host "Successfully updated alert $alertNameActive"
+                  # Track successful alert update
+                  $successfulAlerts += @{
+                    QueryName = $q.name
+                    AlertName = $alertNameActive
+                    Operation = "Update"
+                  }
+                }
+              } else {
+                Write-Host "Creating new alert $alertNameActive..."
+                
+                # Debug: Show the complete command that will be executed
+                $debugCmd = "az monitor scheduled-query create " +
+                  "--name '$alertNameActive' " +
+                  "--resource-group '$rg' " +
+                  "--scopes '$workspaceId' " +
+                  "--description 'Alert $($q.name) for VMSS-$activeVmss' " +
+                  "--action-groups '$actionGroupId' " +
+                  "--severity '$($q.severity)' " +
+                  "--evaluation-frequency '$frequencyFormat' " +
+                  "--window-size '$timeWindowFormat' " +
+                  "--condition 'count ''AlertQuery'' > 0' " +
+                  "--condition-query AlertQuery='$queryText'"
+                Write-Host "Debug: Executing command:"
+                Write-Host $debugCmd
+                
+                $createResult = az monitor scheduled-query create `
+                  --name $alertNameActive `
+                  --resource-group $rg `
+                  --scopes $workspaceId `
+                  --description "Alert $($q.name) for VMSS-$activeVmss" `
+                  --action-groups $actionGroupId `
+                  --severity $($q.severity) `
+                  --evaluation-frequency $frequencyFormat `
+                  --window-size $timeWindowFormat `
+                  --condition "count 'AlertQuery' > 0" `
+                  --condition-query AlertQuery="$queryText" 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                  Write-Warning "Failed to create alert $alertNameActive`: $createResult"
+                  Write-Host "Exit code: $LASTEXITCODE"
+                  # Track failed alert creation
+                  $failedAlerts += @{
+                    QueryName = $q.name
+                    AlertName = $alertNameActive
+                    Operation = "Create"
+                    Reason = $createResult
+                    ExitCode = $LASTEXITCODE
+                  }
+                  # If creation failed due to name conflict, try to find and delete conflicting alerts
+                  if ($createResult -like "*Alert with the same name exists*") {
+                    Write-Host "Alert name conflict detected. This may be due to alerts in different resource groups sharing the same workspace."
+                    Write-Host "Consider using a more specific naming convention or cleaning up conflicting alerts."
+                  }
+                  # Don't exit on individual alert failures, continue with next alert
+                  Write-Host "Continuing with next alert despite this failure..."
+                } else {
+                  Write-Host "Successfully created alert $alertNameActive"
+                  # Track successful alert creation
+                  $successfulAlerts += @{
+                    QueryName = $q.name
+                    AlertName = $alertNameActive
+                    Operation = "Create"
+                  }
+                }
+              }
+
+              # Disable inactive alert if exists
+              $inactiveAlert = az monitor scheduled-query show --name $alertNameInactive --resource-group $rg 2>$null
+              if ($inactiveAlert) {
+                Write-Host "Disabling inactive alert $alertNameInactive..."
+                az monitor scheduled-query update `
+                  --name $alertNameInactive `
+                  --resource-group $rg `
+                  --disabled true
+              } else {
+                Write-Host "No inactive alert $alertNameInactive found, skipping."
+              }
+
+              # ===== TEMPORARY: Cleanup old/inactive alerts =====
+              # TODO: Remove this block once alert management is stable
+              $oldPatternInactive = "$($q.name)_$inactiveVmss"  # Original naming pattern
+              if ($oldPatternInactive -ne $alertNameInactive) {
+                $oldInactiveAlert = az monitor scheduled-query show --name $oldPatternInactive --resource-group $rg 2>$null
+                if ($oldInactiveAlert) {
+                  Write-Host "TEMPORARY: Found old inactive alert $oldPatternInactive, deleting it..."
+                  az monitor scheduled-query delete `
+                    --name $oldPatternInactive `
+                    --resource-group $rg `
+                    --yes 2>&1
+                  if ($LASTEXITCODE -eq 0) {
+                    Write-Host "TEMPORARY: Successfully deleted old inactive alert $oldPatternInactive"
+                  } else {
+                    Write-Warning "TEMPORARY: Failed to delete old inactive alert $oldPatternInactive"
+                  }
+                }
+              }
+              # ===== END TEMPORARY CLEANUP BLOCK =====
+            }
+            
+            # ===== OPERATION SUMMARY =====
+            Write-Host ""
+            Write-Host "===================================================="
+            Write-Host "SCHEDULED QUERY ALERT OPERATION SUMMARY"
+            Write-Host "===================================================="
+            
+            Write-Host "Total queries processed: $($queries.Count)"
+            Write-Host "Successful operations: $($successfulAlerts.Count)"
+            Write-Host "Failed operations: $($failedAlerts.Count)"
+            Write-Host ""
+            
+            if ($successfulAlerts.Count -gt 0) {
+              Write-Host "✅ SUCCESSFUL ALERTS:"
+              Write-Host "--------------------"
+              foreach ($success in $successfulAlerts) {
+                Write-Host "  ✓ Query: '$($success.QueryName)' - $($success.Operation) - Alert: '$($success.AlertName)'"
+              }
+              Write-Host ""
+            }
+            
+            if ($failedAlerts.Count -gt 0) {
+              Write-Host "❌ FAILED ALERTS:"
+              Write-Host "-----------------"
+              foreach ($failed in $failedAlerts) {
+                Write-Host "  ✗ Query: '$($failed.QueryName)' - $($failed.Operation) FAILED"
+                Write-Host "    Alert Name: '$($failed.AlertName)'"
+                Write-Host "    Exit Code: $($failed.ExitCode)"
+                Write-Host "    Reason: $($failed.Reason)"
+                Write-Host ""
+              }
+              Write-Host "FAILURE ANALYSIS:"
+              Write-Host "- Check if the queries contain valid KQL syntax"
+              Write-Host "- Verify workspace permissions and action group configuration"
+              Write-Host "- Review alert naming conflicts across resource groups"
+              Write-Host "- Consider manual cleanup of conflicting alerts if needed"
+              Write-Host ""
+            }
+            
+            # Final success message
+            Write-Host "===================================================="
+            Write-Host "Completed processing all scheduled query alerts"
+            if ($failedAlerts.Count -eq 0) {
+              Write-Host "🎉 ALL ALERTS PROCESSED SUCCESSFULLY!"
+            } else {
+              Write-Host "⚠️  Some alerts failed - see summary above for details"
+            }
+            Write-Host "===================================================="
+            
+            # Ensure we exit with success code
+            exit 0
+        env:
+          backendPool1name: $(backendPool01)
+          vmssToPoolMapJson: $(vmssToPoolMapJson)
+          vmssAlerts: $(vmssAlerts)
+          vmssScheduledQueries: $(vmssScheduledQueries)
