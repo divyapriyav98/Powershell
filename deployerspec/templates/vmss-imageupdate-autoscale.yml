@@ -1,0 +1,94 @@
+parameters:
+  - name: condition
+    type: string
+    default: 'succeeded()'
+
+  # - name: dependsOn
+  #   type: string
+  #   default: 'UpdateImage'
+
+  - name: galleryName
+    type: string
+    default: 'workeastussharedgallery'
+
+jobs:
+  - job: UpdateImage
+    displayName: 'Set new image for VMSS (no upgrade yet)'
+    # ${{ if ne(parameters.dependsOn, '') }}:
+    #   dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+    steps:
+      - task: AzureCLI@2
+        name: UpdateImage
+        inputs:
+          azureSubscription: $(azure_svc_connection)
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -euo pipefail
+            echo "Setting subscription..."
+            az account set --subscription $(subscriptionId)
+
+            echo "Fetching VMSS name dynamically..."
+            vmssName=$(az vmss list \
+              --subscription $(subscriptionId) \
+              --resource-group $(resourceGroup) \
+              --query "[0].name" -o tsv)
+
+            echo "VMSS Name: $vmssName"
+
+            # imageResourceId="/subscriptions/$(gallerySubscriptionId)/resourceGroups/$(galleryResourceGroup)/providers/Microsoft.Compute/galleries/$(galleryName)/images/$(imageDefinition)/versions/$(imageVersion)"
+            imageVersion="1.0.$(Build.BuildId)"
+            imageResourceId="/subscriptions/$(gallerySubscriptionId)/resourceGroups/$(galleryResourceGroup)/providers/Microsoft.Compute/galleries/$(galleryName)/images/$(imageDefinition)/versions/$imageVersion"
+            echo "Using Image Resource ID: $imageResourceId"
+   
+            echo "Updating VMSS model to use new image..."
+            # az vmss update \
+            #   --resource-group $(resourceGroup) \
+            #   --name "$vmssName" \
+            #   --set virtualMachineProfile.storageProfile.imageReference.id="$imageResourceId" plan=null
+            
+            echo "Updating VMSS model to use new SIG image via id..."
+            az vmss update \
+              --resource-group $(resourceGroup) \
+              --name "$vmssName" \
+              --set \
+                virtualMachineProfile.storageProfile.imageReference.id="$imageResourceId" \
+                virtualMachineProfile.storageProfile.imageReference.publisher=null \
+                virtualMachineProfile.storageProfile.imageReference.offer=null \
+                virtualMachineProfile.storageProfile.imageReference.sku=null \
+                virtualMachineProfile.storageProfile.imageReference.version=null \
+                plan=null
+
+            echo "VMSS model updated. Existing instances not yet upgraded."
+
+  - job: ScaleOut
+    dependsOn: UpdateImage
+    displayName: 'Increase instance count to test new image'
+    condition: succeeded() 
+    steps:
+      - task: AzureCLI@2
+        name: ScaleVMSS
+        inputs:
+          azureSubscription: $(azure_svc_connection)
+          scriptType: bash
+          scriptLocation: inlineScript
+    
+          inlineScript: |
+            #TODO: Deploy to Green and Blue, but disable alerts for blue.
+            set -euo pipefail
+            echo "Setting subscription..."
+            az account set --subscription $(subscriptionId)
+
+            echo "Fetching VMSS name dynamically..."
+            vmssName=$(az vmss list \
+              --subscription $(subscriptionId) \
+              --resource-group $(resourceGroup) \
+              --query "[0].name" -o tsv)
+            echo "Scaling VMSS to $(newCapacity) instances..."
+            az vmss scale \
+              --resource-group $(resourceGroup) \
+              --name "$vmssName" \
+              --new-capacity $(newCapacity)
+
+            echo "Scale operation complete. New instances should be based on new image."
