@@ -1,0 +1,583 @@
+# Job Template to create test VM and run scan, chef, dynatrace config for image validation.
+
+parameters:
+- name: dependsOn
+  type: string
+  default: ''
+- name: condition
+  type: string
+  default: 'succeeded()'
+- name: enable_dynatrace
+  type: string
+  default: 'true'
+- name: azureSubscription
+  type: string
+- name: vmName
+  type: string
+  default: 'combined-security-test-vm-$(Build.BuildId)'
+- name: resourceGroup
+  type: string
+  default: 'rg-imagebuilder-$(Build.BuildId)'
+- name: location
+  type: string
+  default: 'eastus'
+- name: adminUsername
+  type: string
+  default: 'mcazureuser'
+- name: imageId
+  type: string
+- name: subnetId
+  type: string
+- name: vmSize
+  type: string
+  default: 'Standard_DS2_v2'
+- name: subscriptionId
+  type: string
+  default: 'bd341354-d4c1-4de2-996f-6228b587337c'
+- name: inspecRpmName
+  type: string
+  default: 'inspec-5.18.14-1.el8.x86_64.rpm'
+- name: inspecRpmUrl
+  type: string
+  default: 'https://artifacts.eastus.az.mastercard.int/artifactory/archive-internal-unstable/com/mastercard/claas/tempscripts/inspec-5.18.14-1.el8.x86_64.rpm'
+- name: inspecTestFiles
+  type: string
+  default: '7.1_network_security.rb 3.3_root_path.rb'
+- name: prismaFqdn
+  type: string
+  default: 'combined-security-test-vm-24211.2uvibf0gxalutblwws5qgz4poe.bx.internal.cloudapp.net'
+- name: dynatraceUrl
+  type: string
+  default: 'https://dynatrace.dev.logging.work.eastus.az.mastercard.int:443/communication'
+
+jobs:
+- job: CombinedSecurityScan
+  displayName: 'Combined Chef InSpec and Prisma Scan on SIG Image'
+  ${{ if ne(parameters.dependsOn, '') }}:
+      dependsOn: ${{ parameters.dependsOn }}
+  condition: ${{ parameters.condition }}
+  variables:
+    - name: AZURE_CORE_OUTPUT
+      value: 'none'
+    # - group: ImageBuilder
+    - name: repo_dir
+      value: '$(System.DefaultWorkingDirectory)'
+
+  steps:
+    # Checkout az-bm-vmss-img-builder repository
+    - task: Checkout@1
+      displayName: 'Checkout az-bm-vmss-img-builder Repository'
+      inputs:
+        repository: 'imageBuilderRepo'
+        ref: 'refs/heads/dev/mohian'
+        # path: 's'
+    # 1. Check prerequisites and prepare artifacts
+    - script: |
+        set -e
+        echo "=== Checking Pipeline Prerequisites ==="
+        echo "Repo Dir Workspace: $(repo_dir)"
+        ls -ltr $(repo_dir)
+
+        echo "====================================="
+        
+        if [ -d "$(repo_dir)/module/pipelines/controls" ]; then
+          echo "✅ InSpec controls directory found"
+        else
+          echo "❌ ERROR: InSpec controls directory not found"
+          echo "   Expected: $(repo_dir)/module/pipelines/controls"
+          exit 1
+        fi
+        
+        if [ -f "$(repo_dir)/module/resources/install.sh" ]; then
+          echo "✅ Chef install script found"
+        else
+          echo "❌ ERROR: Chef install script not found"
+          echo "   Expected: $(repo_dir)/module/resources/install.sh"
+          exit 1
+        fi
+        
+        mkdir -p $(Pipeline.Workspace)/artifacts
+        
+        if [ -f "$(repo_dir)/module/resources/${{ parameters.inspecRpmName }}" ]; then
+          echo "✅ Pre-downloaded InSpec RPM found"
+          cp $(repo_dir)/module/resources/${{ parameters.inspecRpmName }} $(Pipeline.Workspace)/artifacts/
+        else
+          echo "⚠️  No pre-downloaded InSpec RPM found"
+          echo "   Will attempt to download during installation"
+        fi
+        
+        cp $(repo_dir)/module/resources/install.sh $(Pipeline.Workspace)/artifacts/
+        echo "✅ Install script copied to artifacts"
+        
+        echo "=== Prerequisites Check Complete ==="
+      displayName: 'Check Prerequisites and Prepare Artifacts'
+
+    # 2. Create Test VM from SIG Image
+    - task: AzureCLI@2
+      displayName: 'Create Test VM from SIG Image'
+      inputs:
+        azureSubscription: '${{ parameters.azureSubscription }}'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        addSpnToEnvironment: true
+        inlineScript: |
+          set -e
+          # Generate a password that meets Azure's complexity requirements
+          SPECIAL_CHARS='!@#$%^&*()_+-=[]{}|;:",.<>/?'
+          PASSWORD_BASE=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 12)
+          PASSWORD_SPECIAL=$(LC_ALL=C tr -dc "$SPECIAL_CHARS" < /dev/urandom | head -c 1)
+          ADMIN_PASS="${PASSWORD_BASE}${PASSWORD_SPECIAL}aB1!"
+          echo "Generated a compliant password."
+
+          VM_NAME="${{ parameters.vmName }}"
+          RG="${{ parameters.resourceGroup }}"
+          LOCATION="${{ parameters.location }}"
+          ADMIN_USER="${{ parameters.adminUsername }}"
+          SUBNET_ID="${{ parameters.subnetId }}"
+          
+          echo "############ Set AZ Subscription ###########"
+          az account set --subscription "${{ parameters.subscriptionId }}"
+
+          echo "Attempting to create VM with Image ID: $IMAGE_ID"
+          az vm create \
+            --name "$VM_NAME" \
+            --resource-group "$RG" \
+            --location "$LOCATION" \
+            --image "${{ parameters.imageid }}" \
+            --admin-username "$ADMIN_USER" \
+            --admin-password "$ADMIN_PASS" \
+            --subnet "$SUBNET_ID" \
+            --public-ip-address "" \
+            --size "${{ parameters.vmSize }}" \
+            --subscription "${{ parameters.subscriptionId }}"
+          
+          echo "✅ VM created successfully: $VM_NAME"
+          echo "VM Name: $VM_NAME"
+          echo "Resource Group: $RG"
+          echo "Location: $LOCATION"
+          
+          VM_IP=$(az vm list-ip-addresses -g $RG -n $VM_NAME --query "[0].virtualMachine.network.privateIpAddresses[0]" -o tsv --subscription "${{ parameters.subscriptionId }}")
+          echo "VM Private IP: $VM_IP"
+          echo "##vso[task.setvariable variable=VM_IP]$VM_IP"
+      # env:
+      #   IMAGE_ID: $(imageIdVar)
+
+    # 3. Wait for VM to be ready
+    - task: AzureCLI@2
+      displayName: 'Wait for VM to be Ready'
+      inputs:
+        azureSubscription: '${{ parameters.azureSubscription }}'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        addSpnToEnvironment: true
+        inlineScript: |
+          set -e
+          VM_NAME="${{ parameters.vmName }}"
+          RG="${{ parameters.resourceGroup }}"
+          
+          echo "=== Waiting for VM to be Ready ==="
+          
+          echo "Waiting for VM to be running..."
+          az vm wait --name $VM_NAME --resource-group $RG --created --subscription "${{ parameters.subscriptionId }}"
+          
+          echo "Waiting for VM to be fully ready..."
+          sleep 60
+          
+          echo "✅ VM is ready for testing"
+
+    # 4. Install InSpec on the VM
+    - task: AzureCLI@2
+      displayName: 'Install InSpec on VM'
+      inputs:
+        azureSubscription: '${{ parameters.azureSubscription }}'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        addSpnToEnvironment: true
+        inlineScript: |
+          set -e
+          VM_NAME="${{ parameters.vmName }}"
+          RG="${{ parameters.resourceGroup }}"
+          
+          echo "=== Installing InSpec on VM ==="
+          
+          echo "Installing InSpec..."
+          az vm run-command invoke \
+            --resource-group $RG \
+            --name $VM_NAME \
+            --command-id RunShellScript \
+            --scripts "
+              set -e
+              echo 'Installing system dependencies...'
+              sudo yum install -y wget ruby ruby-devel gcc make openssl-devel
+              
+              echo 'Downloading InSpec RPM...'
+              wget ${{ parameters.inspecRpmUrl }} -O /tmp/inspec.rpm
+              
+              echo 'Installing InSpec...'
+              sudo rpm -ivh /tmp/inspec.rpm
+              
+              echo 'Setting license...'
+              export CHEF_LICENSE=accept
+              
+              echo 'Verifying installation...'
+              inspec version
+              
+              echo 'InSpec installation completed successfully'
+            " \
+            --subscription "${{ parameters.subscriptionId }}"
+          
+          echo "✅ InSpec installation completed"
+
+    # 5. Install Prisma on the VM
+    # - task: AzureCLI@2
+    #   displayName: 'Install Prisma on VM'
+    #   inputs:
+    #     azureSubscription: '${{ parameters.azureSubscription }}'
+    #     scriptType: 'bash'
+    #     scriptLocation: 'inlineScript'
+    #     addSpnToEnvironment: true
+    #     inlineScript: |
+    #       set -e
+    #       VM_NAME="${{ parameters.vmName }}"
+    #       RG="${{ parameters.resourceGroup }}"
+    #       LOCATION="${{ parameters.location }}"
+    #       ADMIN_USER="${{ parameters.adminUsername }}"
+    #       IMAGE_ID="${{ parameters.imageId }}"
+    #       SUBNET_ID="${{ parameters.subnetId }}"
+          
+    #       echo "VM already created in previous step: $VM_NAME"
+          
+    #       VM_IP=$(az vm list-ip-addresses -g $RG -n $VM_NAME --query "[0].virtualMachine.network.privateIpAddresses[0]" -o tsv --subscription "${{ parameters.subscriptionId }}")
+    #       echo "##vso[task.setvariable variable=VM_IP]$VM_IP"
+          
+    #       chmod +x $(repo_dir)/module/artifacts/prismainstall.sh
+          
+    #       cd $(repo_dir)/module/artifacts
+          
+    #       az vm run-command invoke \
+    #         --resource-group $RG \
+    #         --subscription "${{ parameters.subscriptionId }}" \
+    #         --name $VM_NAME \
+    #         --command-id RunShellScript \
+    #         --scripts @prismainstall.sh \
+    #         --parameters "PRISMA_CLOUD_HOST=$(prisma_cloud_host) PRISMA_CLOUD_ENV=$(prisma_cloud_env) PRISMA_CLOUD_USER=$(prisma_id) PRISMA_CLOUD_PASS=$(prisma_key)"
+
+    # 6. Install Dynatrace OneAgent on the VM
+    # - task: AzureCLI@2
+    #   displayName: 'Install Dynatrace OneAgent on VM'
+    #   inputs:
+    #     azureSubscription: '${{ parameters.azureSubscription }}'
+    #     scriptType: 'bash'
+    #     scriptLocation: 'inlineScript'
+    #     addSpnToEnvironment: true
+    #     inlineScript: |
+    #       set -e
+    #       VM_NAME="${{ parameters.vmName }}"
+    #       RG="${{ parameters.resourceGroup }}"
+          
+    #       echo "=== Installing Dynatrace OneAgent on VM ==="
+          
+    #       if [[ "${{ parameters.enable_dynatrace }}" == "true" ]]; then
+    #         echo "Dynatrace installation is enabled"
+            
+    #         echo "Copying dynatrace-install.sh script to VM..."
+    #         az vm run-command invoke \
+    #           --resource-group $RG \
+    #           --name $VM_NAME \
+    #           --command-id RunShellScript \
+    #           --scripts "mkdir -p /tmp/dynatrace" \
+    #           --subscription "${{ parameters.subscriptionId }}"
+            
+    #         dynatraceScript=$(<$(repo_dir)/module/artifacts/dynatrace-install.sh)
+    #         az vm run-command invoke \
+    #           --resource-group $RG \
+    #           --name $VM_NAME \
+    #           --command-id RunShellScript \
+    #           --scripts "cat > /tmp/dynatrace/dynatrace-install.sh" \
+    #           --parameters "content=$(echo "$dynatraceScript" | base64 -w 0)" \
+    #           --subscription "${{ parameters.subscriptionId }}"
+            
+    #         echo "Copying OneAgent installer from artifacts..."
+    #         az vm run-command invoke \
+    #           --resource-group $RG \
+    #           --name $VM_NAME \
+    #           --command-id RunShellScript \
+    #           --scripts "mkdir -p /tmp/dynatrace" \
+    #           --subscription "${{ parameters.subscriptionId }}"
+            
+    #         oneagentScript=$(<$(repo_dir)/module/artifacts/oneagent.sh)
+    #         az vm run-command invoke \
+    #           --resource-group $RG \
+    #           --name $VM_NAME \
+    #           --command-id RunShellScript \
+    #           --scripts "cat > /tmp/dynatrace/oneagent.sh" \
+    #           --parameters "content=$(echo "$oneagentScript" | base64 -w 0)" \
+    #           --subscription "${{ parameters.subscriptionId }}"
+            
+    #         az vm run-command invoke \
+    #           --resource-group $RG \
+    #           --name $VM_NAME \
+    #           --command-id RunShellScript \
+    #           --scripts "
+    #             set -e
+    #             cd /tmp/dynatrace
+    #             chmod +x oneagent.sh
+    #              echo '✅ Successfully copied oneagent.sh from artifacts'
+    #             ls -la oneagent.sh
+    #           " \
+    #           --subscription "${{ parameters.subscriptionId }}"
+            
+    #         echo "Installing Dynatrace OneAgent..."
+    #         az vm run-command invoke \
+    #           --resource-group $RG \
+    #           --name $VM_NAME \
+    #           --command-id RunShellScript \
+    #           --scripts "
+    #             set -e
+    #             chmod +x /tmp/dynatrace/dynatrace-install.sh
+    #             cd /tmp/dynatrace
+                
+    #             echo 'Current directory: '\$(pwd)
+    #             echo 'Files in directory:'
+    #             ls -la
+    #             echo 'File sizes:'
+    #             wc -c dynatrace-install.sh oneagent.sh
+                
+    #             echo 'Setting ARTIFACT_PATH variable...'
+    #             export ARTIFACT_PATH=/tmp/dynatrace
+                
+    #             echo 'Testing connectivity to Dynatrace server...'
+    #             timeout 5 curl -k ${{ parameters.dynatraceUrl }} || echo 'Connectivity test failed'
+                
+    #             echo 'Running bootstrap_oneagent function...'
+    #             source ./dynatrace-install.sh
+                
+    #             mkdir -p /opt/dynatrace/oneagent/agent
+                
+    #             if bootstrap_oneagent; then
+    #               echo 'bootstrap_oneagent function completed successfully'
+    #             else
+    #               echo 'bootstrap_oneagent function failed, creating basic structure manually'
+    #               cat > /opt/dynatrace/oneagent/agent/deregister_oneagent.sh << 'EOF'
+    #                 #!/bin/bash
+    #                 echo "Dynatrace OneAgent deregistration script"
+    #                 vm_name=$(curl --silent -H Metadata:true "http://169.254.169.254/metadata/instance?api-version=2019-11-01" | python -c 'import sys, json; print (json.load(sys.stdin)["compute"]["name"])')
+    #                 echo "VM Name: $vm_name"
+    #                 EOF
+    #               chmod +x /opt/dynatrace/oneagent/agent/deregister_oneagent.sh
+                  
+    #               (crontab -u root -l 2>/dev/null; echo "* * * * * /opt/dynatrace/oneagent/agent/deregister_oneagent.sh") | crontab -u root -
+    #               echo 'Basic Dynatrace structure created manually'
+    #             fi
+                
+    #             echo 'Checking if OneAgent directory was created:'
+    #             ls -la /opt/dynatrace/oneagent/agent/ 2>/dev/null || echo 'OneAgent directory not found'
+    #           " \
+    #           --subscription "${{ parameters.subscriptionId }}"
+            
+    #         echo "✅ Dynatrace OneAgent installation completed"
+    #       else
+    #         echo "⚠️  Dynatrace installation is disabled (enable_dynatrace != true)"
+    #       fi
+
+    # 7. Verify Dynatrace OneAgent Installation
+    # - task: AzureCLI@2
+    #   displayName: 'Verify Dynatrace OneAgent Installation'
+    #   inputs:
+    #     azureSubscription: '${{ parameters.azureSubscription }}'
+    #     scriptType: 'bash'
+    #     scriptLocation: 'inlineScript'
+    #     addSpnToEnvironment: true
+    #     inlineScript: |
+    #       set -e
+    #       VM_NAME="${{ parameters.vmName }}"
+    #       RG="${{ parameters.resourceGroup }}"
+          
+    #       echo "=== Verifying Dynatrace OneAgent Installation ==="
+          
+    #       if [[ "${{ parameters.enable_dynatrace }}" == "true" ]]; then
+    #         echo "Verifying Dynatrace OneAgent installation..."
+    #         az vm run-command invoke \
+    #           --resource-group $RG \
+    #           --name $VM_NAME \
+    #           --command-id RunShellScript \
+    #           --scripts "
+    #             set -e
+    #             echo 'Checking Dynatrace OneAgent installation...'
+                
+    #             if [[ -d /opt/dynatrace/oneagent/agent ]]; then
+    #               echo '✅ Dynatrace OneAgent directory exists'
+    #               ls -la /opt/dynatrace/oneagent/agent/
+    #             else
+    #               echo '❌ Dynatrace OneAgent directory not found'
+    #             fi
+                
+    #             if [[ -f /opt/dynatrace/oneagent/agent/deregister_oneagent.sh ]]; then
+    #               echo '✅ Dynatrace deregistration script exists'
+    #             else
+    #               echo '❌ Dynatrace deregistration script not found'
+    #             fi
+                
+    #             if crontab -u root -l 2>/dev/null | grep -q deregister_oneagent; then
+    #               echo '✅ Dynatrace crontab entry exists'
+    #             else
+    #               echo '❌ Dynatrace crontab entry not found'
+    #             fi
+                
+    #             echo 'Dynatrace OneAgent verification completed'
+    #           " \
+    #           --subscription "${{ parameters.subscriptionId }}"
+            
+    #         echo "✅ Dynatrace OneAgent verification completed"
+    #       else
+    #         echo "⚠️  Skipping Dynatrace verification (enable_dynatrace != true)"
+    #       fi
+
+    # 8. Copy InSpec controls to VM
+    - task: AzureCLI@2
+      displayName: 'Copy InSpec Controls to VM'
+      inputs:
+        azureSubscription: '${{ parameters.azureSubscription }}'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        addSpnToEnvironment: true
+        inlineScript: |
+          set -e
+          VM_NAME="${{ parameters.vmName }}"
+          RG="${{ parameters.resourceGroup }}"
+          
+          echo "=== Copying InSpec Controls to VM ==="
+          
+          echo "Copying InSpec controls to VM..."
+          az vm run-command invoke \
+            --resource-group $RG \
+            --name $VM_NAME \
+            --command-id RunShellScript \
+            --scripts "mkdir -p /tmp/controls" \
+            --subscription "${{ parameters.subscriptionId }}"
+          
+          for file in $(repo_dir)/module/pipelines/controls/*.rb; do
+            filename=$(basename "$file")
+            echo "Copying $filename..."
+            az vm run-command invoke \
+              --resource-group $RG \
+              --name $VM_NAME \
+              --command-id RunShellScript \
+              --scripts "cat > /tmp/controls/$filename" \
+              --parameters "content=$(cat "$file" | base64 -w 0)" \
+              --subscription "${{ parameters.subscriptionId }}"
+          done
+          
+          echo "✅ Controls copied successfully"
+
+    # 9. Run InSpec tests on the VM
+    - task: AzureCLI@2
+      displayName: 'Run Chef InSpec Tests on VM'
+      continueOnError: true
+      inputs:
+        azureSubscription: '${{ parameters.azureSubscription }}'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        addSpnToEnvironment: true
+        inlineScript: |
+          set -e
+          VM_NAME="${{ parameters.vmName }}"
+          RG="${{ parameters.resourceGroup }}"
+          
+          echo "=== Running InSpec Tests ==="
+          
+          echo "Executing InSpec tests..."
+          az vm run-command invoke \
+            --resource-group $RG \
+            --name $VM_NAME \
+            --command-id RunShellScript \
+            --scripts "
+              set -e
+              export CHEF_LICENSE=accept
+              cd /tmp/controls
+              
+              inspec exec ${{ parameters.inspecTestFiles }} \
+                --reporter cli junit2:/tmp/inspec-results.xml html:/tmp/inspec-results.html
+              
+              echo 'InSpec tests completed'
+              ls -la /tmp/inspec-results.*
+            " \
+            --subscription "${{ parameters.subscriptionId }}"
+          
+          echo "✅ InSpec tests executed successfully"
+
+    # 10. Run Prisma scan on the VM
+    - task: Bash@3
+      displayName: 'Generate Prisma Report'
+      continueOnError: true
+      inputs:
+        filePath: $(repo_dir)/module/artifacts/vminator.sh
+        arguments: '$(prisma_id) $(prisma_key) ${{ parameters.prismaFqdn }} template $(prisma_api_host_cve) $(artifactory_user) $(artifactory_pwd) $(repo_dir)'
+        workingDirectory: $(repo_dir)
+
+    # 11. Retrieve InSpec test results
+    - task: AzureCLI@2
+      displayName: 'Retrieve InSpec Test Results'
+      inputs:
+        azureSubscription: '${{ parameters.azureSubscription }}'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        addSpnToEnvironment: true
+        inlineScript: |
+          set -e
+          VM_NAME="${{ parameters.vmName }}"
+          RG="${{ parameters.resourceGroup }}"
+          
+          echo "=== Retrieving InSpec Test Results ==="
+          
+          echo "Retrieving test results..."
+          az vm run-command invoke \
+            --resource-group $RG \
+            --name $VM_NAME \
+            --command-id RunShellScript \
+            --scripts "cat /tmp/inspec-results.xml" \
+            --subscription "${{ parameters.subscriptionId }}" \
+            --output json --query "value[0].message" -o tsv > $(Pipeline.Workspace)/inspec-results.xml
+          
+          az vm run-command invoke \
+            --resource-group $RG \
+            --name $VM_NAME \
+            --command-id RunShellScript \
+            --scripts "cat /tmp/inspec-results.html" \
+            --subscription "${{ parameters.subscriptionId }}" \
+            --output json --query "value[0].message" -o tsv > $(Pipeline.Workspace)/inspec-results.html
+          
+          echo "✅ InSpec test results retrieved successfully"
+          ls -la $(Pipeline.Workspace)/inspec-results.*
+
+    # 12. Cleanup - Delete the test VM
+    - task: AzureCLI@2
+      displayName: 'Cleanup - Delete Test VM'
+      condition: always()
+      inputs:
+        azureSubscription: '${{ parameters.azureSubscription }}'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        addSpnToEnvironment: true
+        inlineScript: |
+          set -e
+          VM_NAME="${{ parameters.vmName }}"
+          RG="${{ parameters.resourceGroup }}"
+          
+          echo "=== Cleaning up Test VM ==="
+          
+          echo "Deleting VM: $VM_NAME"
+          az vm delete \
+            --name $VM_NAME \
+            --resource-group $RG \
+            --yes \
+            --subscription "${{ parameters.subscriptionId }}"
+          
+          echo "✅ VM cleanup completed"
+
+    # 13. Publish combined results
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Combined Security Scan Results'
+      inputs:
+        PathtoPublish: '$(Pipeline.Workspace)'
+        ArtifactName: 'combined-security-results'
