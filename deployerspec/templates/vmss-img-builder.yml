@@ -1,0 +1,781 @@
+parameters:
+  - name: condition
+    type: string
+    default: 'succeeded()'
+
+jobs:
+- job: BuildImage
+  displayName: 'Build VMSS Image'
+  timeoutInMinutes: 180
+  condition: ${{ parameters.condition }}
+  # condition: and(succeeded(), or(eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'promote_canary'), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'shift_canary'), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'promote_live')))
+  steps:
+  - task: AzureCLI@2
+    displayName: 'Create Resources and AIB Identity'
+    inputs:
+      azureSubscription: $(azure_svc_connection)
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      addSpnToEnvironment: true
+      inlineScript: |
+        set -e
+        identityName="$(userAssignedIdentityName)"
+        aibRg="$(resourceGroup)"
+        loc="$(location)"
+        sub_id="$(subscriptionId)"
+        storageAccountName="$(storageAccount)"
+
+        identityPrincipalId=$(az identity show --resource-group $aibRg --name $identityName --subscription $sub_id --query principalId -o tsv)
+        identityResourceId=$(az identity show --resource-group $aibRg --name $identityName --subscription $sub_id --query id -o tsv)
+        
+        if [ -z "$identityPrincipalId" ]; then
+          echo "##vso[task.logissue type=error;]Failed to retrieve Principal ID for identity $identityName"
+          exit 1
+        fi
+        
+        echo "##vso[task.setvariable variable=identityResourceId]$identityResourceId"
+        echo "##vso[task.setvariable variable=identityPrincipalId]$identityPrincipalId"
+
+        echo "Upgrading Azure CLI to latest version..."
+        az config set auto-upgrade.enable=yes
+        az upgrade --yes --all
+
+  - task: AzureCLI@2
+    displayName: 'Assign Roles & Verify Permissions'
+    inputs:
+      azureSubscription: $(azure_svc_connection)
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      addSpnToEnvironment: true
+      inlineScript: |
+        set -e
+        identityPrincipalId="$(identityPrincipalId)"
+        aibRg="$(resourceGroup)"
+        galleryRg="$(galleryResourceGroup)"
+        sub_id="$(subscriptionId)"
+        gallery_sub_id="$(gallerySubscriptionId)"
+        storageAccountName="$(storageAccount)"
+        # storageAccountName="vmssartifactsstg"
+        
+        aibRgScope="/subscriptions/$sub_id/resourceGroups/$aibRg"
+        galleryRgScope="/subscriptions/$gallery_sub_id/resourceGroups/$galleryRg"
+        storageScope="/subscriptions/$sub_id/resourceGroups/$aibRg/providers/Microsoft.Storage/storageAccounts/$storageAccountName"
+        galleryImageScope="/subscriptions/$gallery_sub_id/resourceGroups/$galleryRg/providers/Microsoft.Compute/galleries/$(galleryName)/images/$(galleryImageDefinitionName)"
+
+        # Helper to idempotently assign a role. Continues if the assignment already exists.
+        assign_role () {
+          local assignee="$1"
+          local role="$2"
+          local scope="$3"
+          local sub="$4"
+
+          echo "Assigning role '$role' on scope '$scope' (subscription: $sub)..."
+          set +e
+          output=$(az role assignment create --assignee "$assignee" --role "$role" --scope "$scope" --subscription "$sub" 2>&1)
+          status=$?
+          set -e
+          if [ $status -ne 0 ]; then
+            if echo "$output" | grep -qi "RoleAssignmentExists"; then
+              echo "Role assignment already exists for '$role' at scope '$scope'. Continuing."
+            else
+              echo "$output"
+              echo "##vso[task.logissue type=error;]Failed to assign role '$role' at scope '$scope'"
+              exit 1
+            fi
+          fi
+        }
+
+        # Temp solution for VM creation failure during image version creation:
+        # az role assignment create --assignee 2ee1d0bc-994e-4d47-9d01-da41cac32df1 --role "Managed Identity Operator" --scope /subscriptions/1e3fd2bd-6171-4f89-b039-8d2ecee852d3/resourceGroups/cloudcore-logstorage-work-eastus/providers/Microsoft.ManagedIdentity/userAssignedIdentities/mi-dcr-work-eastus
+        log_identity_ResourceId="/subscriptions/1e3fd2bd-6171-4f89-b039-8d2ecee852d3/resourceGroups/cloudcore-logstorage-work-eastus/providers/Microsoft.ManagedIdentity/userAssignedIdentities/mi-dcr-work-eastus"
+        log_identity_sub_id="1e3fd2bd-6171-4f89-b039-8d2ecee852d3"
+        assign_role "$servicePrincipalId" "Managed Identity Operator" "$log_identity_ResourceId" "$log_identity_sub_id"
+
+        # END Temp solution
+
+        # Perform idempotent role assignments
+        assign_role "$identityPrincipalId" "Contributor" "$aibRgScope" "$sub_id"
+        assign_role "$identityPrincipalId" "Contributor" "$galleryRgScope" "$gallery_sub_id"
+        assign_role "$identityPrincipalId" "Storage Blob Data Reader" "$storageScope" "$sub_id"
+        assign_role "$identityPrincipalId" "Reader" "$galleryImageScope" "$sub_id"
+
+        vnetRgScope="/subscriptions/$sub_id/resourceGroups/$(vNetResourceGroupName)"
+        assign_role "$identityPrincipalId" "Virtual Machine Contributor" "$vnetRgScope" "$sub_id"
+
+        echo "Configuring storage account network rules to allow access..."
+        az storage account update --name "$storageAccountName" --resource-group "$aibRg" --subscription "$sub_id" --default-action Allow --output none
+
+        echo "Waiting for role assignment and network rule propagation (120 sec)..."
+        sleep 120
+
+        echo "Verifying storage account access with managed identity..."
+        # Test access by listing containers using managed identity authentication
+        az storage container list --account-name "$storageAccountName" --auth-mode login --output none
+        if [ $? -ne 0 ]; then
+          echo "##vso[task.logissue type=error;]Verification failed: Managed identity cannot access the storage account. RBAC or network rules may have failed or taken too long to propagate."
+          exit 1
+        fi
+        
+        # TODO: replace above check with below
+        # az storage container list --account-name "$storageAccountName" --auth-mode login --output none || { echo "##vso[task.logissue type=error;]Verification failed: Managed identity cannot access the storage account."; exit 1; }
+
+        echo "Permission verification successful."
+  - task: AzureCLI@2
+    displayName: 'Download and Upload Artifacts'
+    inputs:
+      azureSubscription: $(azure_svc_connection)
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      addSpnToEnvironment: true
+      inlineScript: |
+        set -e
+        
+        # Configuration
+        storageAccount="$(storageAccount)"
+        containerName="$(storageContainerName)"
+        # container="artifacts"
+        resourceGroup="$(resourceGroup)"
+        localArtifactsPath="$(Pipeline.Workspace)/artifacts"
+        mkdir -p "$localArtifactsPath"
+
+        # Get storage account key
+        storageKey=$(az storage account keys list --resource-group "$resourceGroup" --account-name "$storageAccount" --subscription "$(subscriptionId)" --query '[0].value' -o tsv)
+        if [ -z "$storageKey" ]; then
+          echo "##vso[task.logissue type=error;]Failed to retrieve storage account key for $storageAccount."
+          exit 1
+        fi
+
+        # Create container if it doesn't exist
+        az storage container create --name "$containerName" --account-name "$storageAccount" --account-key "$storageKey" --subscription "$(subscriptionId)" --output none
+
+        # Prepare file for artifact URLs
+        artifactUrlsFile="$localArtifactsPath/artifact_urls.json"
+        echo "[]" > "$artifactUrlsFile"
+
+        # Function to process a list of URLs
+        process_urls() {
+          local urls_input="$1"
+          local artifact_type="$2"
+          local urls_json
+
+          # If the input is empty, create an empty JSON array and return.
+          if [ -z "$urls_input" ]; then
+            echo "Input for '$artifact_type' is empty. Skipping."
+            urls_json="[]"
+          else
+            # The input is a space-separated string. Convert it to a JSON array.
+            echo "Input for '$artifact_type' is a string. Converting to JSON array."
+            urls_json=$(echo "$urls_input" | jq -R 'split(" ") | map(select(length > 0))')
+          fi
+          
+          # Final validation that we have a valid JSON array
+          if ! echo "$urls_json" | jq -e 'if type == "array" then true else false end' > /dev/null 2>&1; then
+            echo "##vso[task.logissue type=error;]Could not parse artifact list for '$artifact_type'. Input was: $urls_input. Processed as: $urls_json"
+            urls_json="[]"
+          fi
+
+          echo "Processing URLs for $artifact_type: $urls_json"
+          echo "$urls_json" | jq -r '.[]' | while read -r url; do
+            if [ -z "$url" ]; then
+              continue
+            fi
+            
+            fileName=$(basename "$url")
+            localFilePath="$localArtifactsPath/$fileName"
+            
+            echo "Downloading ($artifact_type) $url to $localFilePath"
+            curl -fSL -o "$localFilePath" "$url"
+            if [ $? -ne 0 ]; then
+              echo "##vso[task.logissue type=error;]Failed to download artifact: $url"
+              exit 1
+            fi
+
+            echo "Uploading $fileName to container $containerName"
+            az storage blob upload \
+              --file "$localFilePath" \
+              --container-name "$containerName" \
+              --name "$fileName" \
+              --account-name "$storageAccount" \
+              --account-key "$storageKey" \
+              --subscription "$(subscriptionId)" \
+              --overwrite --output none
+            
+            blobUrl="https://$storageAccount.blob.core.windows.net/$containerName/$fileName"
+            
+            # Add artifact info to JSON file
+            tmpfile=$(mktemp)
+            jq --arg fileName "$fileName" --arg blobUrl "$blobUrl" --arg type "$artifact_type" '. += [{"fileName": $fileName, "blobUrl": $blobUrl, "type": $type}]' "$artifactUrlsFile" > "$tmpfile"
+            mv "$tmpfile" "$artifactUrlsFile"
+            
+            # Sanitize filename for variable name and set pipeline variable
+            varName=$(echo "$fileName" | tr '.-' '_' | tr '[:lower:]' '[:upper:]')_BLOB_URL
+            echo "Setting pipeline variable: $varName = $blobUrl"
+            echo "##vso[task.setvariable variable=$varName]$blobUrl"
+          done
+        }
+
+        # Process service artifacts and setup scripts
+        echo "Processing service artifacts..."
+        process_urls "$(serviceArtifacts)" "artifact"
+        
+        echo "Processing service setup scripts..."
+        process_urls "$(serviceSetupScript)" "script"
+        
+        echo "All artifacts processed successfully."
+        echo "Artifact URLs file content:"
+        cat "$artifactUrlsFile"
+
+  - task: AzureCLI@2
+    displayName: 'Detect Source Image Type'
+    name: DetectSourceImageInfo
+    inputs:
+      azureSubscription: $(azure_svc_connection)
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      addSpnToEnvironment: true
+      inlineScript: |
+        set -e
+        # Resolve/validate base image version (supports 'latest')
+        BASE_IMAGE_PARAM="$(baseImageVersion)"
+        if [ -z "$BASE_IMAGE_PARAM" ] || [ "$BASE_IMAGE_PARAM" = "latest" ]; then
+          echo "Resolving latest image version..."
+          RESOLVED_BASE_IMAGE_VERSION=$(az sig image-version list --resource-group "$(galleryResourceGroup)" --gallery-name "$(galleryName)" --gallery-image-definition "$(galleryImageDefinitionName)" --subscription "$(gallerySubscriptionId)" --query "sort_by(@,&name)[-1].name" -o tsv)
+          [ -z "$RESOLVED_BASE_IMAGE_VERSION" ] && echo "##vso[task.logissue type=error;]No image versions found in gallery." && exit 1
+        else
+          if az sig image-version show --resource-group "$(galleryResourceGroup)" --gallery-name "$(galleryName)" --gallery-image-definition "$(galleryImageDefinitionName)" --gallery-image-version "$BASE_IMAGE_PARAM" --subscription "$(gallerySubscriptionId)" >/dev/null 2>&1; then RESOLVED_BASE_IMAGE_VERSION="$BASE_IMAGE_PARAM"; else echo "##vso[task.logissue type=error;]Specified baseImageVersion '$BASE_IMAGE_PARAM' not found."; exit 1; fi
+        fi
+        echo "Resolved base image version: $RESOLVED_BASE_IMAGE_VERSION"
+        echo "--- Showing gallery image version info (version: $RESOLVED_BASE_IMAGE_VERSION) ---"
+        az sig image-version show --resource-group "$(galleryResourceGroup)" --gallery-name "$(galleryName)" --gallery-image-definition "$(galleryImageDefinitionName)" --gallery-image-version "$RESOLVED_BASE_IMAGE_VERSION" --subscription "$(gallerySubscriptionId)" -o json
+        echo "-----------------------------------------------------------"
+        # (Legacy vars for downstream compatibility)
+        BASE_IMAGE_VERSION_RAW="$RESOLVED_BASE_IMAGE_VERSION"
+        
+        echo "--- Detecting source type and plan info ---"
+
+        definition=$(az sig image-definition show \
+          --resource-group "$(galleryResourceGroup)" \
+          --gallery-name "$(galleryName)" \
+          --gallery-image-definition "$(galleryImageDefinitionName)" \
+          --subscription "$(gallerySubscriptionId)" -o json)
+
+        echo "Source Image Defination: $(galleryImageDefinitionName):"
+        echo "============================================"
+        echo "$definition"
+        echo "============================================"
+        
+        
+        planName=$(echo "$definition" | jq -r '.plan.name // empty')
+
+        # Always use SharedImageGallery as source type since we're building from SIG
+        # sourceImageType="SharedImageGallery"
+        
+        # Extract base image information from the image definition
+        baseImagePublisher=$(echo "$definition" | jq -r '.identifier.publisher // empty')
+        baseImageOffer=$(echo "$definition" | jq -r '.identifier.offer // empty')
+        baseImageSku=$(echo "$definition" | jq -r '.identifier.sku // empty')
+        
+        echo "Extracted base image info from definition:"
+        echo "  Publisher: $baseImagePublisher"
+        echo "  Offer: $baseImageOffer"
+        echo "  SKU: $baseImageSku"
+        
+        if [ -n "$planName" ]; then
+            echo "Detected Marketplace-based SIG image with explicit plan."
+            hasPlan="true"
+            planProduct=$(echo "$definition" | jq -r '.plan.product')
+            planPublisher=$(echo "$definition" | jq -r '.plan.publisher')
+            
+            # Use latest as fallback if baseImageVersion is not set
+            checkVersion="$(baseImageVersion)"
+            if [ -z "$checkVersion" ]; then
+                checkVersion="latest"
+            fi
+            
+            # Check if the original Marketplace image still exists
+            echo "Checking if original Marketplace image exists: $baseImagePublisher/$baseImageOffer/$baseImageSku/$checkVersion"
+            if az vm image show --location "$(location)" --publisher "$baseImagePublisher" --offer "$baseImageOffer" --sku "$baseImageSku" --version "$checkVersion" > /dev/null 2>&1; then
+                echo "Original Marketplace image found. Using PlatformImage source type."
+                sourceImageType="PlatformImage"
+            else
+                echo "Original Marketplace image not found. Using SharedImageGallery source type with plan info."
+                sourceImageType="SharedImageGallery"
+            fi
+        elif [ "$baseImagePublisher" = "Mastercard" ]; then
+            echo "Detected Mastercard SIG image - checking if original Marketplace image exists."
+            hasPlan="true"
+            # Use extracted values for plan info when not found in definition
+            planName="$baseImageSku"
+            planProduct="$baseImageOffer"
+            planPublisher="$baseImagePublisher"
+            
+            # Use latest as fallback if baseImageVersion is not set
+            checkVersion="$(baseImageVersion)"
+            if [ -z "$checkVersion" ]; then
+                checkVersion="latest"
+            fi
+            
+            # Check if the original Marketplace image still exists
+            echo "Checking if original Marketplace image exists: $baseImagePublisher/$baseImageOffer/$baseImageSku/$checkVersion"
+            if az vm image show --location "$(location)" --publisher "$baseImagePublisher" --offer "$baseImageOffer" --sku "$baseImageSku" --version "$checkVersion" > /dev/null 2>&1; then
+                echo "Original Marketplace image found. Using PlatformImage source type."
+                sourceImageType="PlatformImage"
+            else
+                echo "Original Marketplace image not found. Using SharedImageGallery source type with plan info."
+                sourceImageType="SharedImageGallery"
+            fi
+        elif [[ "$baseImagePublisher" =~ ^(MicrosoftWindowsServer|Canonical|RedHat|SUSE|Oracle|CentOS|credativ|OpenLogic|cloudera|datastax|bitnami|checkpoint|fortinet|paloaltonetworks|barracudanetworks|f5-networks|citrix|riverbed|silver-peak|array_networks|kemp|radware|sophos|trend|veeam|commvault|netapp)$ ]]; then
+            echo "Detected SIG image based on common Marketplace publisher: $baseImagePublisher"
+            hasPlan="true"
+            # Use extracted values for plan info
+            planName="$baseImageSku"
+            planProduct="$baseImageOffer"
+            planPublisher="$baseImagePublisher"
+            
+            # Use latest as fallback if baseImageVersion is not set
+            checkVersion="$(baseImageVersion)"
+            if [ -z "$checkVersion" ]; then
+                checkVersion="latest"
+            fi
+            
+            # Check if the original Marketplace image still exists
+            echo "Checking if original Marketplace image exists: $baseImagePublisher/$baseImageOffer/$baseImageSku/$checkVersion"
+            if az vm image show --location "$(location)" --publisher "$baseImagePublisher" --offer "$baseImageOffer" --sku "$baseImageSku" --version "$checkVersion" > /dev/null 2>&1; then
+                echo "Original Marketplace image found. Using PlatformImage source type."
+                sourceImageType="PlatformImage"
+            else
+                echo "Original Marketplace image not found. Using SharedImageGallery source type with plan info."
+                sourceImageType="SharedImageGallery"
+            fi
+        else
+            echo "Non-Mastercard SIG image detected. Checking if it has inherited plan information."
+            # Check if the SIG image has plan info (inherited from Marketplace origin)
+            if [ -n "$baseImagePublisher" ] && [ -n "$baseImageOffer" ] && [ -n "$baseImageSku" ]; then
+                # This SIG image likely originated from a Marketplace image
+                echo "SIG image appears to be based on Marketplace image: $baseImagePublisher/$baseImageOffer/$baseImageSku"
+                hasPlan="true"
+                # Use extracted values for plan info
+                planName="$baseImageSku"
+                planProduct="$baseImageOffer"  
+                planPublisher="$baseImagePublisher"
+                
+                # Use latest as fallback if baseImageVersion is not set
+                checkVersion="$(baseImageVersion)"
+                if [ -z "$checkVersion" ]; then
+                    checkVersion="latest"
+                fi
+                
+                # Check if the original Marketplace image still exists
+                echo "Checking if original Marketplace image exists: $baseImagePublisher/$baseImageOffer/$baseImageSku/$checkVersion"
+                if az vm image show --location "$(location)" --publisher "$baseImagePublisher" --offer "$baseImageOffer" --sku "$baseImageSku" --version "$checkVersion" > /dev/null 2>&1; then
+                    echo "Original Marketplace image found. Using PlatformImage source type."
+                    sourceImageType="PlatformImage"
+                else
+                    echo "Original Marketplace image not found. Using SharedImageGallery source type with plan info."
+                    sourceImageType="SharedImageGallery"
+                fi
+            else
+                echo "Truly custom SIG image with no Marketplace origin. Using SharedImageGallery source type."
+                hasPlan="false"
+                # Don't set plan info for truly custom images
+                planName=""
+                planProduct=""
+                planPublisher=""
+                # Use SharedImageGallery for truly custom images
+                sourceImageType="SharedImageGallery"
+            fi
+        fi
+        
+        # Build the source image version ID for SharedImageGallery (only used if sourceImageType is SharedImageGallery)
+        sourceImageVersionId="/subscriptions/$(gallerySubscriptionId)/resourceGroups/$(galleryResourceGroup)/providers/Microsoft.Compute/galleries/$(galleryName)/images/$(galleryImageDefinitionName)/versions/${RESOLVED_BASE_IMAGE_VERSION}"
+        
+        # Validate that we have the required base image information
+        if [ -z "$baseImagePublisher" ] || [ -z "$baseImageOffer" ] || [ -z "$baseImageSku" ]; then
+            echo "##vso[task.logissue type=error;]Failed to extract base image information from image definition."
+            echo "Publisher: '$baseImagePublisher', Offer: '$baseImageOffer', SKU: '$baseImageSku'"
+            exit 1
+        fi
+        
+        # Debug output
+        echo "Final values being set:"
+        echo "  sourceImageType: $sourceImageType"
+        echo "  hasPlan: $hasPlan"
+        echo "  planName: $planName"
+        echo "  planProduct: $planProduct" 
+        echo "  planPublisher: $planPublisher"
+        echo "  baseImagePublisher: $baseImagePublisher"
+        echo "  baseImageOffer: $baseImageOffer"
+        echo "  baseImageSku: $baseImageSku"
+        echo "  sourceImageVersionId: $sourceImageVersionId"
+
+        # Set Azure DevOps pipeline variables
+        echo "##vso[task.setvariable variable=hasPlan]$hasPlan"
+        echo "##vso[task.setvariable variable=planName]$planName"
+        echo "##vso[task.setvariable variable=planProduct]$planProduct"
+        echo "##vso[task.setvariable variable=planPublisher]$planPublisher"
+        echo "##vso[task.setvariable variable=sourceImageTypeForTemplate]$sourceImageType"
+        echo "##vso[task.setvariable variable=sourceImageVersionId]$sourceImageVersionId"
+        echo "##vso[task.setvariable variable=effectiveBaseImagePublisher]$baseImagePublisher"
+        echo "##vso[task.setvariable variable=effectiveBaseImageOffer]$baseImageOffer"
+        echo "##vso[task.setvariable variable=effectiveBaseImageSku]$baseImageSku"
+
+  - task: AzureCLI@2
+    displayName: 'Create and Run Image Builder Template'
+    name: BuildImageVersion
+    inputs:
+      azureSubscription: $(azure_svc_connection)
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      addSpnToEnvironment: true
+      inlineScript: |
+        set -e
+        IDENTITY_RESOURCE_ID="$(identityResourceId)"
+        SUBSCRIPTION_ID="$(subscriptionId)"
+        GALLERY_SUBSCRIPTION_ID="$(gallerySubscriptionId)"
+        AIB_RESOURCE_GROUP="$(resourceGroup)"
+        GALLERY_RESOURCE_GROUP="$(galleryResourceGroup)"
+        LOCATION="$(location)"
+        GALLERY_NAME="$(galleryName)"
+        IMAGE_DEFINITION_NAME="$(galleryImageDefinitionName)"
+        # IMAGE_VERSION is now set directly in the jq command
+        TEMPLATE_NAME="$(imageTemplateName)"
+        SOURCE_IMAGE_TYPE="$(sourceImageTypeForTemplate)"
+        # Use detected base image values from previous task (will be overridden for RHEL below if needed)
+        BASE_IMAGE_PUBLISHER="$(effectiveBaseImagePublisher)"
+        BASE_IMAGE_OFFER="$(effectiveBaseImageOffer)"
+        BASE_IMAGE_SKU="$(effectiveBaseImageSku)"
+        BASE_IMAGE_VERSION="$(baseImageVersion)"
+        SOURCE_IMAGE_VERSION_ID="$(sourceImageVersionId)"
+        # Use 'latest' if BASE_IMAGE_VERSION is not set
+        EFFECTIVE_BASE_IMAGE_VERSION="${BASE_IMAGE_VERSION:-latest}"
+
+        # Get plan info from previous task variables
+        HAS_PLAN="$(hasPlan)"
+        PLAN_NAME="$(planName)"
+        PLAN_PRODUCT="$(planProduct)"
+        PLAN_PUBLISHER="$(planPublisher)"
+        
+        # # Set plan values based on ADO variables containing "redhat"
+        # if [[ "$(galleryImageDefinitionName)" == *"rhel"* ]] || [[ "$BASE_IMAGE_SKU" == *"rhel"* ]] || [[ "$(imageDefinition)" == *"rhel"* ]]; then
+        #   echo "RHEL detected - overriding base image and plan info to supported Marketplace values"
+        #   BASE_IMAGE_PUBLISHER='redhat'
+        #   BASE_IMAGE_OFFER='rh-rhel'
+        #   BASE_IMAGE_SKU='rh-rhel8'
+        #   PLAN_NAME='rh-rhel8'
+        #   PLAN_PRODUCT='rh-rhel'
+        #   PLAN_PUBLISHER='redhat'
+        #   HAS_PLAN="true"
+        # else
+        #   echo "No RedHat string detected - using detected/supplied plan values"
+        #   echo "Using PLAN_NAME: $PLAN_NAME"
+        #   echo "Using PLAN_PRODUCT: $PLAN_PRODUCT"
+        #   echo "Using PLAN_PUBLISHER: $PLAN_PUBLISHER"
+        # fi
+
+        # Info: MC specific info RHEL8 images
+        # name: 'rh-rhel8'
+        # product: 'rh-rhel'
+        # publisher: 'redhat' 
+        # Source Info and planInfo in distribute section must match, see sample below
+        #  "source": {
+        #   "publisher": "redhat",
+        #   "offer": "rh-rhel",
+        #   "sku": "rh-rhel8",
+        # }      
+        # "planInfo": {
+        #   "name": "rh-rhel8",
+        #   "product": "rh-rhel",
+        #   "publisher": "redhat"
+        # }
+
+        # --- Path to artifacts file ---
+        artifactUrlsFile="$(Pipeline.Workspace)/artifacts/artifact_urls.json"
+
+        # --- Display all variables used in this step ---
+        echo "--- Displaying all variables used in this step ---"
+        echo "IDENTITY_RESOURCE_ID: $IDENTITY_RESOURCE_ID"
+        echo "SUBSCRIPTION_ID: $SUBSCRIPTION_ID"
+        echo "GALLERY_SUBSCRIPTION_ID: $GALLERY_SUBSCRIPTION_ID"
+        echo "AIB_RESOURCE_GROUP: $AIB_RESOURCE_GROUP"
+        echo "GALLERY_RESOURCE_GROUP: $GALLERY_RESOURCE_GROUP"
+        echo "LOCATION: $LOCATION"
+        echo "GALLERY_NAME: $GALLERY_NAME"
+        echo "IMAGE_DEFINITION_NAME: $IMAGE_DEFINITION_NAME"
+        echo "TEMPLATE_NAME: $TEMPLATE_NAME"
+        echo "SOURCE_IMAGE_TYPE: $SOURCE_IMAGE_TYPE"
+        echo "BASE_IMAGE_PUBLISHER: $BASE_IMAGE_PUBLISHER"
+        echo "BASE_IMAGE_OFFER: $BASE_IMAGE_OFFER"
+        echo "BASE_IMAGE_SKU: $BASE_IMAGE_SKU"
+        echo "BASE_IMAGE_VERSION: $BASE_IMAGE_VERSION"
+        echo "EFFECTIVE_BASE_IMAGE_VERSION: $EFFECTIVE_BASE_IMAGE_VERSION"
+        echo "SOURCE_IMAGE_VERSION_ID: $SOURCE_IMAGE_VERSION_ID"
+        echo "artifactUrlsFile: $artifactUrlsFile"
+        echo "vmImageSubnetId: $(vmImageSubnetId)"
+        echo "  PLAN_NAME: $PLAN_NAME"
+        echo "  PLAN_PRODUCT: $PLAN_PRODUCT"  
+        echo "  PLAN_PUBLISHER: $PLAN_PUBLISHER"
+        echo "--- End of variable display ---"
+        
+      
+       
+        # --- Build 'customize' section ---
+        customizeJson="[]"
+        shellInlines="[]"
+
+        # File customizers
+        while IFS= read -r item; do
+          fileName=$(echo "$item" | jq -r '.fileName')
+          blobUrl=$(echo "$item" | jq -r '.blobUrl')
+          destination="/tmp/$fileName"
+
+          fileCustomizer=$(jq -n \
+            --arg name "Download_$(echo $fileName | sed 's/[^a-zA-Z0-9_]/_/g')" \
+            --arg sourceUri "$blobUrl" \
+            --arg destination "$destination" \
+            '{type: "File", name: $name, sourceUri: $sourceUri, destination: $destination}')
+          
+          customizeJson=$(echo "$customizeJson" | jq ". + [$fileCustomizer]")
+        done < <(jq -c '.[]' "$artifactUrlsFile")
+
+        # Shell customizer (scripts)
+        while IFS= read -r item; do
+          fileName=$(echo "$item" | jq -r '.fileName')
+          type=$(echo "$item" | jq -r '.type')
+          destination="/tmp/$fileName"
+
+          if [[ "$type" == "script" ]] && [[ "$fileName" == *.sh ]]; then
+            shellInlines=$(echo "$shellInlines" | jq ". + [\"sudo chmod +x $destination\", \"sudo $destination\"]")
+          fi
+        done < <(jq -c '.[]' "$artifactUrlsFile")
+
+        if [ "$(echo "$shellInlines" | jq 'length')" -gt 0 ]; then
+          shellCustomizer=$(jq -n \
+            --arg name "InstallAndConfigure" \
+            --argjson inline "$shellInlines" \
+            '{type: "Shell", name: $name, inline: $inline}')
+          customizeJson=$(echo "$customizeJson" | jq ". + [$shellCustomizer]")
+        fi
+
+        echo -e "\n--- Final 'customize' block ---"
+        echo "$customizeJson" | jq .
+
+        # --- Build 'source' block ---
+        # planInfo is NOT supported in the source section; removed any planInfo injection.
+        if [ "$SOURCE_IMAGE_TYPE" = "SharedImageGallery" ]; then
+          echo "Building source block for SharedImageGallery (no planInfo)..."
+          # For SharedImageVersion source only the imageVersionId is required/supported.
+          sourceJson=$(jq -n \
+            --arg imageVersionId "$SOURCE_IMAGE_VERSION_ID" \
+            '{type: "SharedImageVersion", imageVersionId: $imageVersionId}')
+        else
+          echo "Building source block for PlatformImage (no planInfo)..."
+          sourceJson=$(jq -n \
+            --arg baseImagePublisher "$BASE_IMAGE_PUBLISHER" \
+            --arg baseImageOffer "$BASE_IMAGE_OFFER" \
+            --arg baseImageSku "$BASE_IMAGE_SKU" \
+            --arg baseImageVersion "$EFFECTIVE_BASE_IMAGE_VERSION" \
+            '{
+              type: "PlatformImage",
+              publisher: $baseImagePublisher,
+              offer: $baseImageOffer,
+              sku: $baseImageSku,
+              version: $baseImageVersion
+            }')
+        fi
+        
+        echo "Generated source JSON:"
+        echo "$sourceJson" | jq .
+
+        # --- Build 'planInfo' block ---
+        # Always create plan info - use explicit plan if available, otherwise use identifier fields as default
+        if [ "$HAS_PLAN" = "true" ] && [ -n "$PLAN_NAME" ] && [ -n "$PLAN_PRODUCT" ] && [ -n "$PLAN_PUBLISHER" ]; then
+          # Use explicit plan information
+          planInfoJson=$(jq -n \
+            --arg planName "$PLAN_NAME" \
+            --arg planProduct "$PLAN_PRODUCT" \
+            --arg planPublisher "$PLAN_PUBLISHER" \
+            '{name: $planName, product: $planProduct, publisher: $planPublisher}')
+          
+          echo "Using explicit plan information:"
+          echo "$planInfoJson" | jq .
+          shouldInjectPlan="true"
+        elif [ -n "$BASE_IMAGE_PUBLISHER" ] && [ -n "$BASE_IMAGE_OFFER" ] && [ -n "$BASE_IMAGE_SKU" ]; then
+          # Use identifier fields as default plan info
+          echo "No explicit plan found. Using identifier fields as default plan info."
+          planInfoJson=$(jq -n \
+            --arg planName "$BASE_IMAGE_SKU" \
+            --arg planProduct "$BASE_IMAGE_OFFER" \
+            --arg planPublisher "$BASE_IMAGE_PUBLISHER" \
+            '{name: $planName, product: $planProduct, publisher: $planPublisher}')
+          
+          echo "Using default plan information:"
+          echo "$planInfoJson" | jq .
+          shouldInjectPlan="true"
+        else
+          echo "No plan information available. planInfoJson will not be created."
+          planInfoJson="{}"
+          shouldInjectPlan="false"
+        fi
+
+        # --- Build full Image Template ---
+        # Build base template first
+        baseTemplate='{
+            "type": "Microsoft.VirtualMachineImages/imageTemplates",
+            "apiVersion": "2024-02-01",
+            "name": $templateName,
+            "location": $location,
+            "identity": {
+              "type": "UserAssigned",
+              "userAssignedIdentities": {
+                ($identityResourceId): {}
+              }
+            },
+            "properties": {
+              "source": $source,
+              "customize": $customize,
+              "distribute": [
+                {
+                  "type": "SharedImage",
+                  "galleryImageId": "/subscriptions/\($gallerySubscriptionId)/resourceGroups/\($galleryResourceGroup)/providers/Microsoft.Compute/galleries/\($galleryName)/images/\($imageDefinitionName)/versions/\($imageVersion)",
+                  "runOutputName": "galleryOutput",
+                  "artifactTags": {
+                      "source": "azureDevOps",
+                      "buildId": $buildId
+                  },
+                  "replicationRegions": [$location]
+                }
+              ],
+              "vmProfile": {
+                "vmSize": "Standard_DS2_v2",
+                "vnetConfig": {
+                  "subnetId": "$(vmImageSubnetId)"
+                }
+              },
+              "buildTimeoutInMinutes": 120
+            }
+          }'
+
+        imageTemplate=$(jq -n \
+          --arg templateName "$TEMPLATE_NAME" \
+          --arg location "$LOCATION" \
+          --arg identityResourceId "$IDENTITY_RESOURCE_ID" \
+          --arg gallerySubscriptionId "$GALLERY_SUBSCRIPTION_ID" \
+          --arg galleryResourceGroup "$GALLERY_RESOURCE_GROUP" \
+          --arg galleryName "$GALLERY_NAME" \
+          --arg imageDefinitionName "$IMAGE_DEFINITION_NAME" \
+          --arg imageVersion "1.0.$(Build.BuildId)" \
+          --arg buildId "$(Build.BuildId)" \
+          --argjson customize "$customizeJson" \
+          --argjson source "$sourceJson" \
+          "$baseTemplate")
+
+        # Inject planInfo if we determined it's needed
+        if [ "$shouldInjectPlan" = "true" ]; then
+          echo "Adding plan information into distribute entries..."
+          echo "planInfoJson content: $planInfoJson"
+          imageTemplate=$(echo "$imageTemplate" | jq --argjson planInfoData "$planInfoJson" '
+            .properties.distribute |= map(
+              if .type == "SharedImage" then
+                . + {planInfo: $planInfoData}
+              else
+                .
+              end
+            )')
+        else
+          echo "No valid plan information available. Skipping planInfo injection."
+        fi
+
+        # --- Save JSON ---
+        echo "$imageTemplate" > image-template.json
+        echo "--- Generated Image Template JSON ---"
+        cat image-template.json
+
+        # --- Create Image Builder Template and Run with Detailed Logging ---
+        echo "Creating / updating image template '$TEMPLATE_NAME'..."
+        az image builder create \
+          --name "$TEMPLATE_NAME" \
+          --resource-group "$AIB_RESOURCE_GROUP" \
+          --image-template image-template.json \
+          --subscription "$SUBSCRIPTION_ID"
+
+        echo ""
+        echo "=== Template (initial) ==="
+        az image builder show \
+          --name "$TEMPLATE_NAME" \
+          --resource-group "$AIB_RESOURCE_GROUP" \
+          --subscription "$SUBSCRIPTION_ID" -o json | jq '{name,location,provisioningState,lastRunStatus,source:.properties.source,customize:.properties.customize,distribute:.properties.distribute,vmProfile:.properties.vmProfile}' || true
+        echo "=========================="
+
+        echo ""
+        echo "Starting image build (async)..."
+        az image builder run \
+          --name "$TEMPLATE_NAME" \
+          --resource-group "$AIB_RESOURCE_GROUP" \
+          --subscription "$SUBSCRIPTION_ID" \
+          --no-wait
+
+        echo ""
+        echo "Polling run state (max 3h @60s)..."
+        max_checks=180
+        i=0
+        while [ $i -lt $max_checks ]; do
+          # tolerate transient errors during polling
+            set +e
+          summary=$(az image builder show --name "$TEMPLATE_NAME" --resource-group "$AIB_RESOURCE_GROUP" --subscription "$SUBSCRIPTION_ID" --query '{prov:provisioningState,runState:lastRunStatus.runState,runSubState:lastRunStatus.runSubState,msg:lastRunStatus.message,start:lastRunStatus.startTime,end:lastRunStatus.endTime}' -o json 2>/dev/null)
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ] || [ -z "$summary" ]; then
+            echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") summary-unavailable"
+          else
+            runState=$(echo "$summary" | jq -r '.runState // "Unknown"')
+            runSubState=$(echo "$summary" | jq -r '.runSubState // ""')
+            msg=$(echo "$summary" | jq -r '.msg // ""')
+            prov=$(echo "$summary" | jq -r '.prov // "Unknown"')
+            echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") provisioningState=$prov runState=$runState runSubState=$runSubState"
+            if [ -n "$msg" ]; then
+              echo "  message: $msg"
+            fi
+            case "$runState" in
+              Succeeded|Failed|Canceled)
+                break
+                ;;
+            esac
+          fi
+          if [ $((i % 10)) -eq 0 ]; then
+            echo "--- run snapshot ---"
+            az image builder show-runs \
+              --name "$TEMPLATE_NAME" \
+              --resource-group "$AIB_RESOURCE_GROUP" \
+              --subscription "$SUBSCRIPTION_ID" -o json 2>/dev/null | jq '.[0] // {} | {runState:(.lastRunStatus.runState // ""), lastRunOn:(.lastRunStatus.lastRunOn // ""), message:(.lastRunStatus.message // ""), provisioningState:(.provisioningState // ""), outputResources:(.outputResources // [])}' || true
+            echo "--------------------"
+          fi
+          sleep 60
+          i=$((i+1))
+        done
+
+        echo ""
+        echo "=== Final Template State ==="
+        az image builder show \
+          --name "$TEMPLATE_NAME" \
+          --resource-group "$AIB_RESOURCE_GROUP" \
+          --subscription "$SUBSCRIPTION_ID" -o json | jq '{name,provisioningState,lastRunStatus}' || true
+        echo "============================"
+
+        final_state=$(az image builder show --name "$TEMPLATE_NAME" --resource-group "$AIB_RESOURCE_GROUP" --subscription "$SUBSCRIPTION_ID" --query 'lastRunStatus.runState' -o tsv 2>/dev/null || echo "Unknown")
+        final_msg=$(az image builder show --name "$TEMPLATE_NAME" --resource-group "$AIB_RESOURCE_GROUP" --subscription "$SUBSCRIPTION_ID" --query 'lastRunStatus.message' -o tsv 2>/dev/null || echo "")
+
+        # --- Set output variable for new image version ---
+        IMAGE_VERSION="1.0.$(Build.BuildId)"
+        newImageGalleryResourceID="/subscriptions/${GALLERY_SUBSCRIPTION_ID}/resourceGroups/${GALLERY_RESOURCE_GROUP}/providers/Microsoft.Compute/galleries/${GALLERY_NAME}/images/${IMAGE_DEFINITION_NAME}/versions/${IMAGE_VERSION}"
+        echo "##vso[task.setvariable variable=newImageGalleryResourceID;isOutput=true]$newImageGalleryResourceID"
+
+        if [ "$final_state" != "Succeeded" ]; then
+          echo "##vso[task.logissue type=error;]Image build failed. final_state=$final_state message=$final_msg"
+          exit 1
+        fi
+
+        echo "✅ Image build succeeded. Template: $TEMPLATE_NAME"
+        echo "New Image Resource ID: $newImageGalleryResourceID"
+        echo "Final message: $final_msg"
+
+       
