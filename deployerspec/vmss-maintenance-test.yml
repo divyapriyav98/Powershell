@@ -1,0 +1,92 @@
+trigger: none
+ 
+schedules:
+  - cron: "0 3 * * *"  # Daily at 3 AM UTC
+    displayName: Daily VMSS Upgrade
+    branches:
+      include:
+        - main
+    always: true
+ 
+pool:
+  vmImage: 'ubuntu-latest'
+ 
+variables:
+  vmssName: 'my-vmss-name'
+  vmssRG: 'my-vmss-resource-group'
+  galleryName: 'workeastussharedgallery'
+  imageDefinition: 'imagebuildertest'
+  galleryRG: 'rg-work-eastus-sharedgallery'
+  gallerySub: '58ac996b-18bf-4b6b-913b-6d963ee15fb3'
+  vmssSub: 'your-vmss-subscription-id'
+  scaleUpCount: 1  # number of new instances to add
+  serviceConnection: 'AzureServiceConnection'  # change to your actual service connection name
+ 
+stages:
+- stage: UpgradeVMSS
+  jobs:
+  - job: CheckAndUpgrade
+    steps:
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: $(serviceConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          echo "Setting subscription to VMSS sub..."
+          az account set --subscription "$(vmssSub)"
+ 
+          echo "Checking if VMSSUpgrade tag is true..."
+          tag=$(az vmss show --resource-group $(vmssRG) --name $(vmssName) --query "tags.VMSSUpgrade" -o tsv)
+ 
+          if [[ "$tag" != "true" ]]; then
+            echo "VMSSUpgrade tag is not set to true. Skipping upgrade."
+            exit 0
+          fi
+ 
+          echo "Fetching latest image version..."
+          az account set --subscription "$(gallerySub)"
+          latestVersion=$(az sig image-version list \
+            --resource-group $(galleryRG) \
+            --gallery-name $(galleryName) \
+            --image-definition $(imageDefinition) \
+            --query "sort_by([].{id:id, ver:name}, &ver)[-1].id" \
+            -o tsv)
+ 
+          if [[ -z "$latestVersion" ]]; then
+            echo "Failed to fetch latest image version. Exiting."
+            exit 1
+          fi
+ 
+          echo "Switching back to VMSS subscription..."
+          az account set --subscription "$(vmssSub)"
+ 
+          echo "Updating VMSS model with latest image..."
+          set +e
+          az vmss update \
+            --name $(vmssName) \
+            --resource-group $(vmssRG) \
+            --set virtualMachineProfile.storageProfile.imageReference.id="$latestVersion"
+          updateStatus=$?
+          set -e
+ 
+          if [[ $updateStatus -ne 0 ]]; then
+            echo "ERROR: Failed to update VMSS model. Exiting."
+            exit 1
+          fi
+ 
+          echo "Scaling out VMSS by $(scaleUpCount)..."
+          currentCapacity=$(az vmss show --resource-group $(vmssRG) --name $(vmssName) --query "sku.capacity" -o tsv)
+          newCapacity=$((currentCapacity + $(scaleUpCount)))
+          az vmss scale --resource-group $(vmssRG) --name $(vmssName) --new-capacity $newCapacity
+ 
+          echo "Updating tags: VMSSUpgrade=false and LastUpgraded=timestamp"
+          now=$(date -u +%Y-%m-%dT%H:%M:%S)
+          az vmss update \
+            --name $(vmssName) \
+            --resource-group $(vmssRG) \
+            --set tags.VMSSUpgrade="false" tags.LastUpgraded="$now"
+ 
+          echo "VMSS upgrade and tagging complete."
+ 
+      displayName: "Check Tag and Upgrade VMSS"
