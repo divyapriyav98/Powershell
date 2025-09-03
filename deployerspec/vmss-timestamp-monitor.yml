@@ -1,0 +1,187 @@
+trigger: none
+pr: none
+
+name: VMSS_Deployer_$(System.DefinitionId)_$(Build.BuildId)
+
+parameters:
+- name: subscriptionId
+  type: string
+  default: 'bd341354-d4c1-4de2-996f-6228b587337c'
+  displayName: 'Subscription ID'
+
+variables:
+- name: azure_svc_connection
+  value: 'abt-devops-agents-work-sp'
+- name: osbOutputSecretName
+  value: 'az-$(System.DefinitionId)-$(Build.BuildId)'
+- name: tagName 
+  value: 'VMSSCreatedOn' 
+# - name: thresholdDate
+#   value: $[format('{0:yyyy-MM-dd}', addDays(utcNow(), -7))] 
+
+pool: 'abt-provisoner-service-work-agents'
+
+steps:
+  - task: AzureCLI@2
+    name: IdentifyOldVMSS
+    displayName: 'Identify VMSS  that are 7 days old'
+    inputs:
+      azureSubscription: $(azure_svc_connection)
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        echo "Checking VMSS instances with tag '$tagName' older than 7 days..."
+
+        # Set subscription
+        az account set --subscription "${{ parameters.subscriptionId }}"
+        
+        # Get current date minus 7 days
+        threshold=$(date -d "-7 days" +%s)
+
+        # Get VMSS resources with the tag
+        vmssList=$(az resource list --resource-type "Microsoft.Compute/virtualMachineScaleSets" --query "[?tags.$tagName]" -o json)
+        # vmssList=$(az resource list --resource-type "Microsoft.Compute/virtualMachineScaleSets" --query "[?tags.$tagName != null]" -o json | jq -r --arg th "$threshold_date" '.[] | select((.tags.createdon | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) < ($th | tonumber)) | "\(.name) in \(.resourceGroup) - CreatedOn: \(.tags.createdon)"')
+        # vmssList=$(az resource list --resource-type "Microsoft.Compute/virtualMachineScaleSets" --query "[?tags.$tagName != null]" -o json | jq -r --argjson th "$threshold_date" '.[] | select((.tags.createdon | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) < $th) | "\(.name) in \(.resourceGroup) - CreatedOn: \(.tags.createdon)"')
+        echo "$vmssList" | jq -c '.[]' | while read vmss; do
+          name=$(echo $vmss | jq -r '.name')
+          rg=$(echo $vmss | jq -r '.resourceGroup')
+          tagValue=$(echo $vmss | jq -r ".tags.$tagName")
+
+          # Convert tag timestamp to epoch
+          tagEpoch=$(date -d "$tagValue" +%s 2>/dev/null)
+
+          if [ $? -ne 0 ]; then
+            echo "VMSS '$name' in RG '$rg' has invalid date format in tag: $tagValue"
+            continue
+          fi
+
+          if [ "$tagEpoch" -lt "$threshold" ]; then
+            echo "VMSS '$name' in RG '$rg' was updated more than 7 days ago (Tag: $tagValue)"
+            old_vmss_list+="$name:$rg,"
+            echo "the old vmss names are"
+            echo "##vso[task.setvariable variable=oldVmssList]$old_vmss_list"
+
+          fi
+        done
+        # Remove trailing comma
+        old_vmss_list=${old_vmss_list%,}
+        # Set pipeline variable
+        # echo "the old vmss names are"
+        # echo "##vso[task.setvariable variable=oldVmssList]$old_vmss_list"
+    env:
+        tagName: $(tagName) 
+  
+  - task: AzureCLI@2
+    name: ListVMs
+    inputs:
+      azureSubscription:  $(azure_svc_connection)
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        echo "Checking for VMs with 'createdon' tag older than $thresholdDate"
+        az account set --subscription "${{ parameters.subscriptionId }}"
+        thresholdDate=$(date -d "7 days ago" '+%Y-%m-%dT%H:%M:%SZ')
+        threshold_date=$(date -d "$thresholdDate" +%s)
+ 
+        echo "VMs older than 7 days are:"
+        vm_list=$(az vm list --query "[?tags.VMSSCreatedOn!=null]" -o json | jq -r --argjson th "$threshold_date" '.[] | select((.tags.VMSSCreatedOn | if test("T") then . else . + "T00:00:00Z" end | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) < $th) | "\(.name) in \(.resourceGroup) - CreatedOn: \(.tags.VMSSCreatedOn)"')
+
+
+        # vm_list=$(az vm list --query "[?tags.VMSSCreatedOn!=null]" -o json | jq -r --argjson th "$threshold_date" '.[] | select((.tags.VMSSCreatedOn | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) < $th) | "\(.name) in \(.resourceGroup) - CreatedOn: \(.tags.VMSSCreatedOn)"')
+        # Check if there are VMs and print them
+        if [ -z "$vm_list" ]; then
+          echo "No VMs found that are older than $thresholdDate."
+        else
+          #  echo "$vm_list"
+           echo "##vso[task.setvariable variable=vm_list]$vm_list"
+        fi
+    env:
+      thresholdDate: $(thresholdDate)
+
+  - script: chmod +x '$(Build.SourcesDirectory)/azure-pipelines/scripts/dummy-certs.sh'
+    displayName: 'Make Dummy Script Executable'
+       
+  - script: '$(Build.SourcesDirectory)/azure-pipelines/scripts/dummy-certs.sh'
+    displayName: 'Run Dummy Certs Script from File' 
+
+  - task: AzureCLI@2
+    displayName: 'Step 3: Update VMSS with current date and Latest Image and Scale Out'
+    inputs:
+      azureSubscription: $(azure_svc_connection)
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        az account set --subscription "${{ parameters.subscriptionId }}"
+        
+        current_date=$(date +%Y-%m-%d)
+        echo "current date $current_date"
+        echo "VMSS List: $oldVmssList"
+
+        # echo  "VMSS List: $(IdentifyOldVMSS.oldVmssList)" #$(oldVmssList)"
+        scaleUpCount=1  # You can make this dynamic if needed
+        IFS=',' read -ra vmss_array <<< "$oldVmssList"
+        for entry in "${vmss_array[@]}"; do
+          vmss_name=$(echo $entry | cut -d':' -f1)
+          rg_name=$(echo $entry | cut -d':' -f2)
+          echo "Processing VMSS: $vmss_name in RG: $rg_name"
+          # Step 1: Update VMSS tag
+          az vmss update --name "$vmss_name" --resource-group "$rg_name" --set tags.VMSSCreatedOn="$current_date"
+
+          # Step 2: Get current image reference
+          image_reference=$(az vmss show --resource-group "$rg_name" --name "$vmss_name" --query "virtualMachineProfile.storageProfile.imageReference" -o json)
+                if [ -z "$image_reference" ]; then
+                  echo "No image reference found for VMSS $vmss_name. Skipping."
+                  continue
+                fi
+ 
+                image_rg=$(echo "$image_reference" | jq -r '.id | split("/") | .[4]')
+                image_name=$(echo "$image_reference" | jq -r '.id | split("/") | .[10]')
+                gallery_name=$(echo "$image_reference" | jq -r '.id | split("/") | .[8]')
+                image_id=$(echo "$image_reference" | jq -r '.id')
+                image_subscription_id=$(echo "$image_reference" | jq -r '.id | split("/") | .[2]')
+ 
+                echo "Image RG: $image_rg"
+                echo "Image Name: $image_name"
+                echo "Gallery: $gallery_name"
+                echo "Image ID: $image_id"
+                echo "Image Sub: $image_subscription_id"
+ 
+                 # Set image subscription context
+                az account set --subscription "$image_subscription_id"
+ 
+                # Find latest image version
+                latest_image_version_id=$(az sig image-version list --gallery-name "$gallery_name" --gallery-image-definition "$image_name" --resource-group "$image_rg" --query "sort_by(@, &publishingProfile.publishedDate)[-1].id" -o tsv)
+                location=$(az sig show --resource-group "$image_rg" --gallery-name "$gallery_name" --query "location" -o tsv)
+ 
+                if [ -z "$latest_image_version_id" ]; then
+                  echo "No published image versions found. Skipping VMSS $vmss_name."
+                  continue
+                fi
+ 
+                echo "Latest image version: $latest_image_version_id"
+
+                az account set --subscription "${{ parameters.subscriptionId }}"
+                #################################################
+                is_marketplace_image=$(echo "$image_reference" | jq -r '.id | test("/subscriptions/.*/resourceGroups/.*/providers/Microsoft.Compute/images/.*/versions/.+")')
+                if [ "$is_marketplace_image" = "true" ]; then
+                    echo "The image is a Marketplace image. Proceeding with regular upgrade..."
+                    # Marketplace image - Proceed with the image upgrade
+                    az vmss update --name "$vmss_name" --resource-group "$rg_name" --set virtualMachineProfile.storageProfile.imageReference.id="$latest_image_version_id"
+                else
+                    echo "The image is a custom image. Removing the Plan information before upgrading..."
+                    # Custom image - Remove the Plan information before upgrading
+                    az vmss update --name "$vmss_name" --resource-group "$rg_name" --set virtualMachineProfile.storageProfile.imageReference.id="$latest_image_version_id" plan=null
+                    az vmss update --name "$vmss_name" --resource-group "$rg_name" --set virtualMachineProfile.storageProfile.imageReference.id="$latest_image_version_id" --set virtualMachineProfile.storageProfile.imageReference.plan=null
+                fi
+
+          # Step 5: Scale out VMSS
+          currentCapacity=$(az vmss list-instances --resource-group "$rg_name" --name "$vmss_name" --query "length(@)" -o tsv)
+          newCapacity=$((currentCapacity + scaleUpCount))
+          echo "Scaling VMSS '$vmss_name' from $currentCapacity to $newCapacity"
+          az vmss scale --resource-group "$rg_name" --name "$vmss_name" --new-capacity "$newCapacity"
+          echo " VMSS '$vmss_name' updated and scaled successfully"
+        done 
+    env:
+       oldVmssList: $(oldVmssList)
+      # oldVmssList: $[outputs['IdentifyOldVMSS.oldVmssList']]     
+
