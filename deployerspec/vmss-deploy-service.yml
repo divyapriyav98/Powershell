@@ -1,0 +1,294 @@
+trigger: none
+pr: none
+
+name: VMSS_Deployer_$(System.DefinitionId)_$(Build.BuildId)
+
+parameters:
+- name: serviceSpecification
+  type: object
+  default:
+    type: "vmss-deployer-service@v0.0.1"
+    osb:
+      keyVaultUrl: "https://juaguil-mckvap2.vault.azure.net/"
+      subscriptionId: "bd341354-d4c1-4de2-996f-6228b587337c"
+      resourceGroup: "msft-rg-poc"
+    provisioningTarget:
+      subscriptionId: "bd341354-d4c1-4de2-996f-6228b587337c"
+    parameters:
+      vmss: "vmss-sj56jn6uv-dev14-work-eastus-0"
+      action: "promote_canary"
+      bootstrap_script:
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/archive-internal-unstable/com/mastercard/builderscloud/bitbucket/atlas-deploy-scripts/3.0.7.11454/scripts/syslog.sh"
+      service_artifacts:
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/rpm-internal/release/com/mastercard/layered/rhel/6/x86_64/mc-git-2.24.0-1.x86_64.rpm"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/archive-internal-stable/com/mastercard/builderscloud/bitbucket/installer/7.21.0/atlassian-bitbucket-7.21.0.parta.tar.gz"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/archive-internal-stable/com/mastercard/builderscloud/bitbucket/installer/7.21.0/atlassian-bitbucket-7.21.0.partb.tar.gz"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/archive-internal-stable/com/mastercard/builderscloud/bitbucket-jwt-plugin/1.0.1/bitbucket-jwt-plugin-1.0.1.jar"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/archive-internal-unstable/com/mastercard/builderscloud/bitbucket/atlas-deploy-scripts/3.0.7.11454/configs/bitbucket.properties"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/archive-internal-unstable/com/mastercard/builderscloud/bitbucket/atlas-deploy-scripts/3.0.7.11454/scripts/syslog.sh"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/archive-internal-unstable/com/mastercard/builderscloud/bitbucket/atlas-deploy-scripts/3.0.7.11454/scripts/backup_to_artifactory.sh"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/archive-internal-unstable/com/mastercard/builderscloud/bitbucket/atlas-deploy-scripts/3.0.7.11454/scripts/restore_from_artifactory.sh"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/rpm-external/com/mastercard/mipv/2023/JANU/repos/local-centos-base/libbasicobjects-0.1.1-32.el7.x86_64.rpm"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/rpm-external/com/mastercard/mipv/2023/JANU/repos/local-centos-base/libcollection-0.7.0-32.el7.x86_64.rpm"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/rpm-external/com/mastercard/mipv/2023/JANU/repos/local-centos-base/libref_array-0.1.5-32.el7.x86_64.rpm"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/rpm-external/com/mastercard/mipv/2023/JANU/repos/local-centos-base/libpath_utils-0.2.1-32.el7.x86_64.rpm"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/rpm-external/com/mastercard/mipv/2023/JANU/repos/local-centos-base/libini_config-1.3.1-32.el7.x86_64.rpm"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/rpm-external/com/mastercard/mipv/2023/JANU/repos/local-centos-base/libverto-tevent-0.2.5-4.el7.x86_64.rpm"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/rpm-external/com/mastercard/mipv/2023/JANU/repos/local-centos-updates/gssproxy-0.7.0-30.el7_9.x86_64.rpm"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/rpm-external/com/mastercard/mipv/2023/JANU/repos/local-centos-base/libnfsidmap-0.25-19.el7.x86_64.rpm"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/rpm-external/com/mastercard/mipv/2023/JANU/repos/local-centos-base/libevent-2.0.21-4.el7.x86_64.rpm"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/rpm-external/com/mastercard/mipv/2023/JANU/repos/local-centos-updates/nfs-utils-1.3.0-0.68.el7.2.x86_64.rpm"
+      service_setup_script:
+      # - "https://artifacts.eastus.az.mastercard.int/artifactory/archive-internal-unstable/com/mastercard/builderscloud/bitbucket/atlas-deploy-scripts/3.0.7.11454/scripts/bitbucket.sh"
+      - "https://artifacts.eastus.az.mastercard.int/artifactory/archive-internal-unstable/com/mastercard/builderscloud/bitbucket/atlas-deploy-scripts/3.0.7.11454/scripts/syslog.sh"
+      resourceGroup: "persistent-sj56jn6uv-avms-dev14-work-eastus"
+      appName: "a2"
+      location: "eastus"
+      region: "eastus"
+      tierName: "dev"
+      environment: "dev"
+      galleryName: "workeastussharedgallery"
+      subscriptionId: "58ac996b-18bf-4b6b-913b-6d963ee15fb3"
+      galleryResourceGroup: "rg-work-eastus-sharedgallery"
+      galleryImageDefinitionName: "mc_base_centos_7"
+      gallerySubscriptionId: "58ac996b-18bf-4b6b-913b-6d963ee15fb3"
+      storageAccount: "stsj56jzivqiqbu4x5a"
+      storageContainerName: "imagebuilderartifacts"
+      baseImagePublisher: "Mastercard"
+      baseImageOffer: "mc_base_centos_7_offer"
+      baseImageSku: "mc_base_centos_7"
+      baseImageVersion: "latest"
+      baseSourceImageType: "SharedImageGallery"
+      imageTemplateName: "rhel8-novmtools-$(Build.BuildId)"
+      imageVersion: '7.94.0'
+      imageDefinition: 'mc_base_centos_7' # 'mc_rhel8_java8', 'imagebuildertest', 'mc_rhel8_java17'
+      userAssignedIdentityName: "vmss-sxvo4sbl3-dev14-work-eastus-msi"
+      vmImageSubnetId: "/subscriptions/bd341354-d4c1-4de2-996f-6228b587337c/resourceGroups/network-AzureForgePOC-work-eastus/providers/Microsoft.Network/virtualNetworks/AzureForgePOCworkeastusvnet/subnets/snet-private"
+      hostingEnvironment: "work"
+      newCapacity: "1"
+      alerts:
+        emails:
+          - name: BuildersCloud
+            address: Alerts.BuildersCloud@mastercard.com
+            common_schema: false
+      scheduled_queries:
+        queries:
+        - name: SCM_Disk_Space_Warning_work
+          severity: 4
+          frequency: 60
+          time_window: 60
+          query: |
+            InsightsMetrics
+             | where TimeGenerated >= ago(1h)
+             | where Origin == "vm.azm.ms" 
+             | where Namespace == "LogicalDisk" and where Name == "FreeSpacePercentage"
+             | where _ResourceId contains "{VMSS_RESOURCE_ID}"
+             | where Val <= 20
+             | extend t=parse_json(Tags)
+             | summarize avg(Val) by bin(TimeGenerated, 10m), Computer, tostring(t["vm.azm.ms/mountId"])
+             | sort by avg_Val asc
+        - name: SCM_VM_Health_Check_work
+          severity: 4
+          frequency: 15
+          time_window: 15
+          query: |
+            InsightsMetrics
+            | where TimeGenerated > ago(15m)
+            | where Origin == "vm.azm.ms"
+            | where Namespace == "Computer"
+            | where Computer hasprefix "{VMSS}"
+            | where _ResourceId contains "{VMSS_RESOURCE_ID}"
+            | where Name == "Heartbeat"
+            | summarize heartbeat_count = count() by bin(TimeGenerated, 10m), Computer
+            | extend alive=iff(heartbeat_count > 2, 1.0, 0.0)
+            | where alive < 1
+          #CPU usage above 85 over the last 30min
+        - name:  azure_cpu_util_alert_scm_work
+          severity: 4
+          frequency: 5
+          time_window: 5
+          query:  |
+            InsightsMetrics
+              | where Origin == "vm.azm.ms"
+              | where Namespace == "Processor"
+              | where Name == "UtilizationPercentage"
+              | where Computer hasprefix "{VMSS}"
+              | where _ResourceId contains "{VMSS_RESOURCE_ID}"
+              | extend t=parse_json(Tags)
+              | summarize avg(Val) by bin(TimeGenerated, 1m),  Computer, tostring(t["vm.azm.ms/totalCpus"])
+              | where avg_Val > 85
+        - name: azure_memory_util_alert_scm_work
+          severity: 4
+          frequency: 5
+          time_window: 10
+          query: |
+            InsightsMetrics
+            | where Origin == "vm.azm.ms"
+            | where Namespace == "Memory"
+            | where Computer has "{VMSS}"
+            | where _ResourceId contains "{VMSS_RESOURCE_ID}"
+            | extend t=parse_json(Tags)
+            | extend totalMem=toint(t["vm.azm.ms/memorySizeMB"])
+            | summarize avg(Val) by bin(TimeGenerated, 5m), tostring(t["vm.azm.ms/memorySizeMB"]), totalMem,  Computer
+            | extend freeMemPerc=toint( avg_Val*100/totalMem)
+            | where freeMemPerc < 15
+    
+  # This is the service specification for the VMSS deployer service.
+  displayName: 'serviceSpecification'
+
+
+variables:
+# - group: AKSPostProvisioning
+- group: ImageBuilder
+- name: azure_svc_connection
+  value: 'abt-devops-agents-work-sp'
+- name: osbOutputSecretName
+  value: 'az-$(System.DefinitionId)-$(Build.BuildId)'
+- name: imageTemplateName
+  value: 'rhel8-novmtools-$(Build.BuildId)'
+- name: imageVersion
+  value: '1.0.$(Build.BuildId)'
+- name: AZURE_CORE_OUTPUT
+  value: 'none'
+      # Possible values are below to control azure cli and azurecli ado task logging.
+      # json: The default format, a JSON string.
+      # jsonc: Colorized JSON.
+      # table: Human-readable ASCII table.
+      # tsv: Tab-separated values, with no headers.
+      # yaml: YAML format.
+      # yamlc: Colorized YAML.
+      # none: Suppresses all standard output from the CLI.
+
+#  # pool:
+#   ${{ if eq(parameters.serviceSpecification.parameters.tierName, 'dev') }}:
+#     pool: 'abt-provisoner-service-work-agents'
+#   ${{ if eq(parameters.serviceSpecification.parameters.tierName, 'work') }}:
+#     pool: 'abt-provisoner-service-work-agents'
+#   ${{ if eq(parameters.serviceSpecification.parameters.tierName, 'nonp') }}:
+#     pool: 'abt-provisoner-service-nonp-agents'
+#   ${{ if eq(parameters.serviceSpecification.parameters.tierName, 'prod') }}:
+#     pool: 'abt-provisoner-service-prod-agents'
+
+pool: 'abt-provisoner-service-work-agents'
+
+
+resources:
+  repositories:
+    - repository: azdo-yaml-templates #alias name
+      type: git #type of repository
+      name: azdo-yaml-templates #repository name
+      ref: feature/vmss-deploy-service #feature/infra-gen-kp #'refs/heads/main' #git branch reference
+    - repository: imageBuilderRepo
+      type: git
+      name: az-bm-vmss-img-builder
+      ref: 'refs/heads/dev/mohian'
+
+stages:
+  - stage: OSBpreprocessing
+    displayName: OSB Processing
+    jobs:
+      - job: OSBPreprocessJob
+        displayName: OSB Preprocess Job
+        steps:
+          - task: PowerShell@2
+            name: DeserializeOSB
+            displayName: 'Deserialize OSB Manifest'
+            inputs:
+              targetType: FilePath
+              filePath: $(Build.SourcesDirectory)/azure-pipelines/scripts/vmss-deployer-manifest.ps1
+              arguments: "-osbManifest '${{ConvertToJson(parameters.serviceSpecification)}}' -osbOutputSecretName '$(osbOutputSecretName)'"
+              showWarnings: true
+              pwsh: true
+            env:
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+     
+  - stage: rollback
+    displayName: 'Rollback VMSS'
+    dependsOn: 
+      - OSBpreprocessing
+    variables:
+      - template: templates/vmss-shared-variables.yml  
+    jobs:
+      - template: templates/vmss/vmss-upgrade-swap.yml@azdo-yaml-templates
+        parameters:
+          condition: and(succeeded(), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'rollback'))
+          SCRIPT_PATH: '$(Build.SourcesDirectory)/azure-pipelines/scripts/vmss-switch-lbswap.ps1'
+
+
+  - stage: BuildVM_Image
+    displayName: 'Build VM Image'
+    dependsOn: 
+      - OSBpreprocessing
+    variables:
+      - template: templates/vmss-shared-variables.yml
+    jobs:
+      # Job to handle the  creation of VM Definition and Image Version with Customizaation, Job Name: BuildImage
+      - template: templates/vmss/vmss-img-builder.yml@azdo-yaml-templates
+        parameters:
+          condition: and(succeeded(), or(eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'promote_canary'), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'shift_canary'), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'promote_live')))
+  
+  - stage: VulnerabilityScan
+    displayName: 'VulnerabilityScan'
+    dependsOn: 
+      - OSBpreprocessing
+      - BuildVM_Image
+    variables:
+       - template: templates/vmss-shared-variables.yml
+       - name: VM_NEWIMAGE_ID
+         value: $[ stageDependencies.BuildVM_Image.BuildImage.outputs['BuildImageVersion.newImageGalleryResourceID'] ]
+    jobs:
+      # Job to handle scan the VM Image  and compliance checks, Job Name: CombinedSecurityScan
+      - template: templates/vmss/scan-vul-inspect.yml@azdo-yaml-templates
+        parameters:
+          # dependsOn: BuildImage
+          condition: and(succeeded(), or(eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'promote_canary'), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'shift_canary'), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'promote_live')))
+          enable_dynatrace: 'true'
+          azureSubscription: '$(azure_svc_connection)'
+          vmName: 'security-test-vm-$(Build.BuildId)'
+          resourceGroup: '$(resourceGroup)'
+          location: '$(location)'
+          adminUsername: 'mcazureuser'
+          imageid: $(VM_NEWIMAGE_ID)
+          # imageId: '/subscriptions/bd341354-d4c1-4de2-996f-6228b587337c/resourceGroups/rg-imagebuilder-24211/providers/Microsoft.Compute/galleries/workeastussharedgallery/images/imagebuildertest/versions/1.0.24211'
+          subnetId: '$(vmImageSubnetId)'
+          vmSize: 'Standard_DS2_v2'
+          subscriptionId: '$(subscriptionId)'
+          inspecRpmName: 'inspec-5.18.14-1.el8.x86_64.rpm'
+          inspecRpmUrl: 'https://artifacts.eastus.az.mastercard.int/artifactory/archive-internal-unstable/com/mastercard/claas/tempscripts/inspec-5.18.14-1.el8.x86_64.rpm'
+          inspecTestFiles: '7.1_network_security.rb 3.3_root_path.rb'
+          prismaFqdn: 'combined-security-test-vm-24211.2uvibf0gxalutblwws5qgz4poe.bx.internal.cloudapp.net'
+          dynatraceUrl: 'https://dynatrace.dev.logging.work.eastus.az.mastercard.int:443/communication'
+          
+  - stage: DeployerActions
+    displayName: 'Deployer Actions'
+    dependsOn: 
+      - OSBpreprocessing
+      - BuildVM_Image
+    variables:
+      - template: templates/vmss-shared-variables.yml 
+      # Job to handle the image update and VMSS upgrade actions, Job Name: UpdateImage
+    jobs:
+      - template: templates/vmss/vmss-imageupdate-autoscale.yml@azdo-yaml-templates
+        parameters:
+          # dependsOn: BuildImage
+          condition: and(succeeded(), or(eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'promote_canary'), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'shift_canary'), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'promote_live')))
+      # Job to handle the VMSS upgrade and load balancer swap actions, alerts enable/disable. Job Name: BlueGreenDeploy
+      - template: templates/vmss/vmss-upgrade-swap.yml@azdo-yaml-templates
+        parameters:
+          SCRIPT_PATH: '$(Build.SourcesDirectory)/azure-pipelines/scripts/vmss-switch-lbswap.ps1'
+          dependsOn: UpdateImage
+          condition: and(succeeded(), or(eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'promote_canary'), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'shift_canary'), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'promote_live')))    
+
+  - stage: test
+    displayName: 'Test VMSS'
+    dependsOn: OSBpreprocessing
+    variables:
+      - template: templates/vmss-shared-variables.yml
+    jobs:
+      - job: TestJob
+        condition: and(succeeded(), eq(stageDependencies.OSBpreprocessing.OSBPreprocessJob.outputs['DeserializeOSB.mcAction'], 'test'))
+        displayName: 'Test Job'
+        steps:
+          - script: echo "Performing test for $(vmss)"
+            displayName: 'Run Test'
+
