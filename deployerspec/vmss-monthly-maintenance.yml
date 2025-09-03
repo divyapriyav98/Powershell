@@ -1,0 +1,126 @@
+trigger: none
+pr: none
+
+name: VMSS_Deployer_$(System.DefinitionId)_$(Build.BuildId)
+variables:
+- name: azure_svc_connection
+  value: 'abt-devops-agents-work-sp'
+- name: osbOutputSecretName
+  value: 'az-$(System.DefinitionId)-$(Build.BuildId)'
+- name: tagName 
+  value: 'VMSSCreatedOn' 
+- name: subscriptionId 
+  value: '1e3fd2bd-6171-4f89-b039-8d2ecee852d3' #'bd341354-d4c1-4de2-996f-6228b587337c'
+- name: resourceGroup
+  value: 'cloudcore-logstorage-work-eastus'
+- name: storageAccount
+  value: 'maintenanceartifactory'
+# - name: SASubscription
+#   value: '1e3fd2bd-6171-4f89-b039-8d2ecee852d3'   
+
+
+pool: 'abt-provisoner-service-work-agents'
+
+stages:
+  - stage: VMSS_Maintenance
+    displayName: 'VMSS MontlyMaintenance'
+    variables:
+    - name: AZURE_CORE_OUTPUT
+      value: 'none'
+    jobs:
+      - job: Access_File_in_Artifactory
+        displayName: 'Access_File_in_Artifactory'
+        timeoutInMinutes: 180
+        steps:
+          - task: AzureCLI@2
+            name: "Fetch_Image_Info"
+            displayName: 'Upload Artifactory files'
+            # condition: and(succeeded(), contains('${{ parameters.serviceSpecification.type }}', 'virtual-machine-scaleset'))
+            inputs:
+              azureSubscription: '$(azure_svc_connection)' 
+              scriptType: 'pscore'  # <-- this is the key for PowerShell Core support
+              scriptLocation: 'scriptPath'
+              scriptPath: '$(Build.SourcesDirectory)/azure-pipelines/scripts/uploadfiles.ps1'
+              addSpnToEnvironment: true
+              arguments: "-resourceGroup $(resourceGroup) -storageAccount $(storageAccount)"
+              # arguments: "-resourceGroup persistent-qeslfbevq-avms-dev14-work-eastus -storageAccount maintenanceartifactory"  #new
+            env:
+                SUBSCRIPTION_ID: $(subscriptionId)
+                ARTIFACT_URLS: 'https://artifacts.eastus.az.mastercard.int/artifactory/archive-internal-stable/com/mastercard/ias/os-templates/vhd/'
+                SERVICEBOOTSTRAPNAME: ''
+        
+      - job: Update_VMSS
+        displayName: 'Update VMSS with New Image'
+        variables:
+          - name: NEW_VERSION_FOUND
+            value: $[ dependencies.Access_File_in_Artifactory.outputs['Fetch_Image_Info.NEW_VERSION_FOUND'] ]
+          - name: ARTIFACT_TO_PROCESS
+            value: $[ dependencies.Access_File_in_Artifactory.outputs['Fetch_Image_Info.ARTIFACT_TO_PROCESS'] ]
+          # - name: storageAccount
+          #   value: 'maintenanceartifactory' #$[ dependencies.Access_File_in_Artifactory.outputs['Fetch_Image_Info.storageAccountName'] ]
+          # - name: resourceGroup
+          #   value: 'cloudcore-logstorage-work-eastus' #'persistent-qeslfbevq-avms-dev14-work-eastus' # Hardcoding for now, should be a pipeline variable
+          # - name: SASubscription
+          #   value: '1e3fd2bd-6171-4f89-b039-8d2ecee852d3'  
+        dependsOn:
+          - Access_File_in_Artifactory
+        condition: and(succeeded(), eq(dependencies.Access_File_in_Artifactory.outputs['Fetch_Image_Info.NEW_VERSION_FOUND'], 'true'))
+        steps:
+          - task: AzureCLI@2
+            name: "Update_VM_with_NewVersion"
+            displayName: 'Update_VM_with_NewVersion'
+            inputs:
+              azureSubscription: '$(azure_svc_connection)'
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              addSpnToEnvironment: true
+              inlineScript: |
+                Write-Host "Updating VMSS with new image version."
+                $artifactJson = '$(ARTIFACT_TO_PROCESS)'
+                Write-Host "Processing artifact: $artifactJson"
+                
+                az account set --subscription $(subscriptionId)
+                # az account set --subscription $(SASubscription)
+
+                if ([string]::IsNullOrEmpty($artifactJson)) {
+                    Write-Host "##vso[task.logissue type=warning;]ARTIFACT_TO_PROCESS variable is not set or empty. Skipping update."
+                    exit 0
+                }
+
+                $artifact = $artifactJson | ConvertFrom-Json
+                Write-Host "Artifact content: $($artifact | ConvertTo-Json -Depth 3 -Compress)"
+                
+                $storageAccount = "$(storageAccount)"
+                $resourceGroup = "$(resourceGroup)"
+
+                if ([string]::IsNullOrEmpty($storageAccount) -or [string]::IsNullOrEmpty($resourceGroup)) {
+                    Write-Host "##vso[task.logissue type=error;]Storage account or resource group information is missing."
+                    exit 1
+                }
+
+                # TODO
+                Write-Host "TODO: File is process, Add logic to do update VMSS or VM with new Image FIle "
+
+                $accountKey = az storage account keys list --account-name $storageAccount --resource-group $resourceGroup --query "[0].value" -o tsv
+
+                Write-Host "Updating status to 'Processed' for $($artifact.RowKey)..."
+                az storage entity merge `
+                    --account-name $storageAccount `
+                    --account-key $accountKey `
+                    --table-name "VmssArtifactoryList" `
+                    --entity `
+                        PartitionKey=$($artifact.PartitionKey) `
+                        RowKey=$($artifact.RowKey) `
+                        Processed='yes' `
+                    --output none
+
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "##vso[task.logissue type=error;]Failed to update artifact status for $($artifact.RowKey)"
+                    exit 1
+                }
+
+                Write-Host "Successfully updated status for $($artifact.RowKey)."
+
+                
+
+        
